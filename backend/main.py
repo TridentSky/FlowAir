@@ -778,34 +778,45 @@ async def player_page(request: Request):
             function applyOutputSettings(aspect, scaling) {
                 const fitMap = { stretch: 'fill', fit: 'contain', fill: 'cover' };
                 const objectFit = fitMap[scaling] || 'fill';
-                const container = document.getElementById('container');
-                if (container) {
-                    if (aspect && aspect !== '16:9') {
-                        container.style.position = 'absolute';
-                        container.style.top = '0';
-                        container.style.left = '0';
-                        container.style.right = '0';
-                        container.style.bottom = '0';
-                        container.style.margin = 'auto';
-                        container.style.aspectRatio = aspect.replace(':', '/');
-                        container.style.width = '';
-                        container.style.height = '';
-                        container.style.maxWidth = '100vw';
-                        container.style.maxHeight = '100vh';
-                        container.style.transform = '';
+                const c = document.getElementById('container');
+                if (c) {
+                    c.style.position = '';
+                    c.style.top = '';
+                    c.style.left = '';
+                    c.style.transform = '';
+                    c.style.width = '';
+                    c.style.height = '';
+                    if (aspect === '9:16') {
+                        c.style.position = 'absolute';
+                        c.style.top = '50%';
+                        c.style.left = '50%';
+                        c.style.transform = 'translate(-50%, -50%)';
+                        c.style.width = '56.25vh';
+                        c.style.height = '100vh';
+                    } else if (aspect === '4:3') {
+                        c.style.position = 'absolute';
+                        c.style.top = '50%';
+                        c.style.left = '50%';
+                        c.style.transform = 'translate(-50%, -50%)';
+                        c.style.width = '133.33vh';
+                        c.style.height = '100vh';
+                    } else if (aspect === '1:1') {
+                        c.style.position = 'absolute';
+                        c.style.top = '50%';
+                        c.style.left = '50%';
+                        c.style.transform = 'translate(-50%, -50%)';
+                        c.style.width = '100vh';
+                        c.style.height = '100vh';
+                    } else if (aspect === '21:9') {
+                        c.style.position = 'absolute';
+                        c.style.top = '50%';
+                        c.style.left = '50%';
+                        c.style.transform = 'translate(-50%, -50%)';
+                        c.style.width = '100vw';
+                        c.style.height = '42.857vw';
                     } else {
-                        container.style.position = '';
-                        container.style.top = '';
-                        container.style.left = '';
-                        container.style.right = '';
-                        container.style.bottom = '';
-                        container.style.margin = '';
-                        container.style.aspectRatio = '';
-                        container.style.width = '100vw';
-                        container.style.height = '100vh';
-                        container.style.maxWidth = '';
-                        container.style.maxHeight = '';
-                        container.style.transform = '';
+                        c.style.width = '100vw';
+                        c.style.height = '100vh';
                     }
                 }
                 video.style.objectFit = objectFit;
