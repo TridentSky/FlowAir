@@ -1,9 +1,30 @@
 # FlowAir - Professional 24/7 Broadcast Playout System
 
-**Version**: 1.0.0
+**Version**: 1.1.0
 **Platform**: Windows 11/10
 **Architecture**: Electron + React + Python FastAPI + FFmpeg
 **Developer**: Trident Sky © 2025
+
+> The app version is shown under the brand in the header. Single source of truth:
+> `frontend/package.json` `version` (also used by electron-builder). Bump it to release;
+> tag releases as `vX.Y.Z`.
+
+---
+
+## 🆕 Changelog
+
+### 1.1.0
+- **24/7 stability**: VU meter rewritten to client-side Web Audio API (removed the FFmpeg
+  subprocess that ran every ~30ms); `validation_cache` capped; dead resource code removed.
+- **UI**: full Windows 11 Fluent redesign (shared theme tokens + Segoe UI), more compact and
+  consistent; smoother playlist drag; fixed the post-reorder selection bug; modals no longer
+  dim the background.
+- **OBS**: program scene switching + transitions in playlist events, inline editing of OBS
+  events (double-click), and a clearer insert flow.
+- **Versioning**: version displayed in-app, sourced from `package.json`.
+
+### 1.0.0
+- Initial release.
 
 ---
 
@@ -570,10 +591,9 @@ FlowAir/
 │
 ├── backend/                       # Python FastAPI backend
 │   ├── main.py                    # FastAPI server + endpoints + player HTML
-│   ├── playlist_manager.py        # Core playlist logic + absolute scheduling
+│   ├── playlist_manager.py        # Core playlist logic + absolute scheduling (timing core)
 │   ├── file_validator.py          # FFprobe file validation
-│   ├── timing_system.py           # Absolute time scheduling algorithm
-│   ├── obs_controller.py          # OBS WebSocket controller (optional module)
+│   ├── obs_controller.py          # OBS WebSocket controller (scenes, transitions, sources)
 │   ├── config.py                  # Configuration constants
 │   ├── requirements.txt           # Python dependencies
 │   └── venv/                      # Auto-created by START.bat (safe to delete)
