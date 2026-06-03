@@ -11,7 +11,7 @@ const LiveIndicator = ({ isPlaying }) => {
       )}
       <span style={{
         ...styles.text,
-        color: isPlaying ? '#ff4444' : '#666'
+        color: isPlaying ? 'var(--live)' : 'var(--text-tertiary)'
       }}>
         {isPlaying ? 'ON AIR' : 'OFF AIR'}
       </span>
@@ -27,19 +27,19 @@ const styles = {
     position: 'relative'
   },
   dot: {
-    width: '12px',
-    height: '12px',
+    width: '11px',
+    height: '11px',
     borderRadius: '50%',
-    background: '#ff4444',
-    boxShadow: '0 0 10px #ff4444'
+    background: 'var(--live)',
+    boxShadow: '0 0 10px var(--live)'
   },
   pulse: {
     position: 'absolute',
     left: '0',
-    width: '12px',
-    height: '12px',
+    width: '11px',
+    height: '11px',
     borderRadius: '50%',
-    background: '#ff4444',
+    background: 'var(--live)',
     animation: 'pulse 1.5s infinite',
     opacity: 0.6
   },

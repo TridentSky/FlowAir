@@ -141,32 +141,32 @@ const styles = {
     flex: 1,
     minHeight: 0,
     overflow: 'auto',
-    background: '#1a1a1a'
+    background: 'var(--bg-base)'
   },
   previewBox: {
-    background: '#0f0f0f',
-    border: '1px solid #333',
-    borderRadius: '6px',
+    background: '#000',
+    border: '1px solid var(--stroke)',
+    borderRadius: 'var(--radius)',
     overflow: 'hidden'
   },
   header: {
-    background: '#1e1e1e',
+    background: 'var(--bg-layer-2)',
     padding: '8px 12px',
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
-    borderBottom: '1px solid #333'
+    borderBottom: '1px solid var(--stroke)'
   },
   title: {
     fontSize: '11px',
     fontWeight: '600',
-    color: '#aaa',
+    color: 'var(--text-secondary)',
     textTransform: 'uppercase',
-    letterSpacing: '0.5px'
+    letterSpacing: '0.6px'
   },
   status: {
     fontSize: '10px',
-    color: '#888',
+    color: 'var(--text-tertiary)',
     fontWeight: '600'
   },
   videoArea: {
@@ -190,29 +190,29 @@ const styles = {
   },
   infoSection: {
     padding: '12px',
-    background: '#0f0f0f'
+    background: 'var(--bg-layer-1)'
   },
   infoRow: {
     display: 'flex',
     justifyContent: 'space-between',
     padding: '5px 0',
-    borderBottom: '1px solid #1a1a1a'
+    borderBottom: '1px solid var(--stroke-subtle)'
   },
   audioRow: {
     display: 'flex',
     alignItems: 'center',
     gap: '10px',
     padding: '5px 0',
-    borderBottom: '1px solid #1a1a1a'
+    borderBottom: '1px solid var(--stroke-subtle)'
   },
   label: {
     fontSize: '10px',
-    color: '#888',
+    color: 'var(--text-tertiary)',
     fontWeight: '600'
   },
   value: {
     fontSize: '10px',
-    color: '#d0d0d0',
+    color: 'var(--text-primary)',
     fontWeight: '500'
   },
   vuMeterSection: {
@@ -230,24 +230,25 @@ const styles = {
   },
   vuMeterContainer: {
     flex: 1,
-    height: '16px',
-    background: '#1a1a1a',
-    borderRadius: '3px',
+    height: '14px',
+    background: 'var(--bg-base)',
+    borderRadius: '999px',
     overflow: 'hidden',
-    border: '1px solid #2a2a2a'
+    border: '1px solid var(--stroke)'
   },
   vuMeterBar: {
     height: '100%',
     transition: 'width 0.05s linear, background 0.1s ease',
-    borderRadius: '2px'
+    borderRadius: '999px'
   },
   vuLevel: {
     fontSize: '9px',
-    color: '#888',
+    color: 'var(--text-secondary)',
     fontWeight: '600',
     minWidth: '35px',
     textAlign: 'right',
-    fontFamily: 'monospace'
+    fontFamily: 'var(--font-mono)',
+    fontVariantNumeric: 'tabular-nums'
   }
 }
 

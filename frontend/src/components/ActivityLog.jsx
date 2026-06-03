@@ -28,10 +28,10 @@ const ActivityLog = ({ collapsed, onToggle, logs = [] }) => {
               <span style={styles.logTime}>{log.time}</span>
               <span style={{
                 ...styles.logMessage,
-                color: log.type === 'error' ? '#ff6666' :
-                       log.type === 'warning' ? '#ffaa66' :
-                       log.type === 'playback' ? '#66aaff' :
-                       '#aaaaaa'
+                color: log.type === 'error' ? '#ff7a7a' :
+                       log.type === 'warning' ? '#e0b341' :
+                       log.type === 'playback' ? 'var(--accent)' :
+                       'var(--text-secondary)'
               }}>
                 {log.message}
               </span>
@@ -45,80 +45,81 @@ const ActivityLog = ({ collapsed, onToggle, logs = [] }) => {
 
 const styles = {
   container: {
-    background: '#1e1e1e',
-    borderTop: '1px solid #333',
+    background: 'var(--bg-layer-1)',
+    borderTop: '1px solid var(--stroke)',
     maxHeight: '200px',
     display: 'flex',
     flexDirection: 'column'
   },
   header: {
-    background: '#242424',
-    padding: '10px 20px',
+    background: 'var(--bg-layer-2)',
+    padding: '9px 20px',
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
     cursor: 'pointer',
-    borderBottom: '1px solid #333'
+    borderBottom: '1px solid var(--stroke)'
   },
   title: {
-    fontSize: '12px',
+    fontSize: '11px',
     fontWeight: '600',
-    color: '#aaa',
+    color: 'var(--text-secondary)',
     textTransform: 'uppercase',
-    letterSpacing: '0.5px'
+    letterSpacing: '0.6px'
   },
   collapseIcon: {
     fontSize: '10px',
-    color: '#666'
+    color: 'var(--text-tertiary)'
   },
   logContainer: {
     flex: 1,
     overflowY: 'auto',
-    padding: '8px 0'
+    padding: '6px 0'
   },
   logEntry: {
     display: 'flex',
     gap: '12px',
-    padding: '6px 20px',
+    padding: '5px 20px',
     fontSize: '11px',
-    borderBottom: '1px solid #272727'
+    borderBottom: '1px solid var(--stroke-subtle)'
   },
   logTime: {
-    color: '#666',
-    fontFamily: 'monospace',
+    color: 'var(--text-tertiary)',
+    fontFamily: 'var(--font-mono)',
+    fontVariantNumeric: 'tabular-nums',
     flexShrink: 0
   },
   logMessage: {
     flex: 1,
-    fontFamily: 'monospace'
+    fontFamily: 'var(--font-mono)'
   },
   emptyState: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: '40px',
-    color: '#666'
+    padding: '32px',
+    color: 'var(--text-tertiary)'
   },
   emptyText: {
     fontSize: '12px'
   },
   collapsedContainer: {
-    background: '#242424',
+    background: 'var(--bg-layer-2)',
     padding: '8px 20px',
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
     cursor: 'pointer',
-    borderTop: '1px solid #333'
+    borderTop: '1px solid var(--stroke)'
   },
   collapsedText: {
     fontSize: '11px',
-    color: '#888',
+    color: 'var(--text-secondary)',
     fontWeight: '600'
   },
   collapsedIcon: {
     fontSize: '10px',
-    color: '#666'
+    color: 'var(--text-tertiary)'
   }
 }
 

@@ -2071,20 +2071,20 @@ const styles = {
   container: {
     width: '100vw',
     height: '100vh',
-    background: '#1a1a1a',
-    color: '#e0e0e0',
+    background: 'var(--bg-base)',
+    color: 'var(--text-primary)',
     display: 'flex',
     flexDirection: 'column',
     overflow: 'hidden',
     userSelect: 'none'
   },
   header: {
-    background: '#242424',
+    background: 'var(--bg-layer-2)',
     padding: '10px 20px',
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
-    borderBottom: '1px solid #333'
+    borderBottom: '1px solid var(--stroke)'
   },
   headerLeft: {
     display: 'flex',
@@ -2094,53 +2094,50 @@ const styles = {
   title: {
     fontSize: '17px',
     fontWeight: '600',
-    color: '#f0f0f0',
+    color: 'var(--text-primary)',
     margin: 0
   },
   credits: {
     fontSize: '11px',
     fontWeight: '400',
-    color: '#666',
+    color: 'var(--text-tertiary)',
     fontStyle: 'italic',
     marginLeft: '-10px'
   },
   date: {
-    fontSize: '14px',
+    fontSize: '13px',
     fontWeight: '500',
-    color: '#aaa',
-    fontFamily: 'monospace'
+    color: 'var(--text-secondary)',
+    fontFamily: 'var(--font-mono)',
+    fontVariantNumeric: 'tabular-nums'
   },
   clock: {
     fontSize: '15px',
     fontWeight: '600',
-    color: '#88ccff',
-    fontFamily: 'monospace',
-    letterSpacing: '1px'
+    color: 'var(--accent)',
+    fontFamily: 'var(--font-mono)',
+    letterSpacing: '1px',
+    fontVariantNumeric: 'tabular-nums'
   },
   timeFormatButton: {
     padding: '4px 10px',
-    background: '#2a2a2a',
-    border: '1px solid #444',
-    borderRadius: '3px',
-    color: '#888',
-    cursor: 'pointer',
+    background: 'var(--bg-layer-3)',
+    border: '1px solid var(--stroke-strong)',
+    borderRadius: 'var(--radius-sm)',
+    color: 'var(--text-tertiary)',
     fontSize: '11px',
     fontWeight: '500',
-    fontFamily: 'monospace',
-    transition: 'all 0.2s'
+    fontFamily: 'var(--font-mono)'
   },
   timeFormatButtonActive: {
     padding: '4px 10px',
-    background: '#3a4a5a',
-    border: '1px solid #88ccff',
-    borderRadius: '3px',
-    color: '#88ccff',
-    cursor: 'pointer',
+    background: 'var(--accent-soft)',
+    border: '1px solid var(--accent)',
+    borderRadius: 'var(--radius-sm)',
+    color: 'var(--accent-hover)',
     fontSize: '11px',
     fontWeight: '600',
-    fontFamily: 'monospace',
-    transition: 'all 0.2s',
-    boxShadow: '0 0 8px rgba(136, 204, 255, 0.3)'
+    fontFamily: 'var(--font-mono)'
   },
   headerRight: {
     display: 'flex',
@@ -2149,48 +2146,46 @@ const styles = {
   },
   headerButton: {
     padding: '6px 14px',
-    background: '#2a2a2a',
-    border: '1px solid #444',
-    borderRadius: '4px',
-    color: '#e0e0e0',
-    cursor: 'pointer',
+    background: 'var(--bg-layer-3)',
+    border: '1px solid var(--stroke-strong)',
+    borderRadius: 'var(--radius)',
+    color: 'var(--text-primary)',
     fontSize: '12px',
-    fontWeight: '500',
-    transition: 'all 0.2s'
+    fontWeight: '500'
   },
   clearButton: {
-    background: '#4a2a2a',
-    borderColor: '#664444',
-    color: '#ff8888'
+    background: 'var(--danger-soft)',
+    borderColor: 'rgba(255, 91, 91, 0.4)',
+    color: '#ff8d8d'
   },
   exitHeaderButton: {
-    background: '#3a1a1a',
-    borderColor: '#664444',
-    color: '#ff6666'
+    background: 'var(--danger-soft)',
+    borderColor: 'rgba(255, 91, 91, 0.4)',
+    color: '#ff7a7a'
   },
   lastSaved: {
     fontSize: '11px',
-    color: '#888',
+    color: 'var(--text-tertiary)',
     marginLeft: '8px'
   },
   mainContent: {
     flex: 1,
     display: 'flex',
     gap: '1px',
-    background: '#333',
+    background: 'var(--stroke)',
     overflow: 'hidden'
   },
   leftPanel: {
     flex: 1,
-    background: '#1a1a1a',
+    background: 'var(--bg-base)',
     display: 'flex',
     flexDirection: 'column',
     overflow: 'hidden'
   },
   rightPanel: {
     width: '380px',
-    background: '#1a1a1a',
-    borderLeft: '1px solid #333',
+    background: 'var(--bg-base)',
+    borderLeft: '1px solid var(--stroke)',
     display: 'flex',
     flexDirection: 'column',
     overflow: 'hidden'
@@ -2201,25 +2196,26 @@ const styles = {
     left: 0,
     right: 0,
     bottom: 0,
-    background: 'rgba(0, 0, 0, 0.7)',
+    background: 'rgba(0, 0, 0, 0.6)',
+    backdropFilter: 'blur(2px)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 10000
   },
   modal: {
-    background: '#2a2a2a',
-    border: '1px solid #444',
-    borderRadius: '6px',
+    background: 'var(--bg-elevated)',
+    border: '1px solid var(--stroke-strong)',
+    borderRadius: 'var(--radius-lg)',
     width: '400px',
-    boxShadow: '0 4px 20px rgba(0,0,0,0.5)'
+    boxShadow: 'var(--shadow-flyout)'
   },
   modalHeader: {
     padding: '16px 20px',
-    borderBottom: '1px solid #333',
+    borderBottom: '1px solid var(--stroke)',
     fontSize: '14px',
     fontWeight: '600',
-    color: '#e0e0e0',
+    color: 'var(--text-primary)',
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center'
@@ -2227,30 +2223,28 @@ const styles = {
   closeButton: {
     background: 'transparent',
     border: 'none',
-    color: '#999',
+    color: 'var(--text-secondary)',
     fontSize: '20px',
-    cursor: 'pointer',
     padding: '0',
-    width: '24px',
-    height: '24px',
+    width: '28px',
+    height: '28px',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: '3px',
-    transition: 'all 0.2s'
+    borderRadius: 'var(--radius-sm)'
   },
   modalBody: {
     padding: '20px',
     fontSize: '13px',
-    color: '#d0d0d0'
+    color: 'var(--text-primary)'
   },
   noteInput: {
     width: '100%',
     padding: '10px',
-    background: '#1e1e1e',
-    border: '1px solid #444',
-    borderRadius: '4px',
-    color: '#e0e0e0',
+    background: 'var(--bg-base)',
+    border: '1px solid var(--stroke-strong)',
+    borderRadius: 'var(--radius)',
+    color: 'var(--text-primary)',
     fontSize: '13px',
     outline: 'none'
   },
@@ -2259,19 +2253,18 @@ const styles = {
     display: 'flex',
     gap: '10px',
     justifyContent: 'flex-end',
-    borderTop: '1px solid #333'
+    borderTop: '1px solid var(--stroke)'
   },
   modalButton: {
     padding: '8px 16px',
     border: 'none',
-    borderRadius: '4px',
+    borderRadius: 'var(--radius)',
     fontSize: '12px',
-    fontWeight: '500',
-    cursor: 'pointer',
-    transition: 'all 0.2s'
+    fontWeight: '600',
+    cursor: 'pointer'
   },
   modalButtonPrimary: {
-    background: '#0078d4',
+    background: '#0a84e0',
     color: '#fff'
   },
   modalButtonConfirm: {
@@ -2279,21 +2272,21 @@ const styles = {
     color: '#fff'
   },
   modalButtonCancel: {
-    background: '#3a3a3a',
-    color: '#e0e0e0'
+    background: 'var(--bg-layer-3)',
+    color: 'var(--text-primary)'
   },
   modalButtonWarning: {
     background: '#8a6b00',
     color: '#fff'
   },
   outputModal: {
-    background: '#2a2a2a',
-    border: '1px solid #444',
-    borderRadius: '6px',
+    background: 'var(--bg-elevated)',
+    border: '1px solid var(--stroke-strong)',
+    borderRadius: 'var(--radius-lg)',
     width: '600px',
     maxHeight: '90vh',
     overflow: 'auto',
-    boxShadow: '0 4px 20px rgba(0,0,0,0.5)'
+    boxShadow: 'var(--shadow-flyout)'
   },
   outputModalBody: {
     padding: '20px',
@@ -2307,22 +2300,24 @@ const styles = {
     gap: '12px'
   },
   settingSectionTitle: {
-    fontSize: '14px',
+    fontSize: '13px',
     fontWeight: '600',
-    color: '#88ccff',
+    color: 'var(--accent)',
     marginBottom: '4px',
-    borderBottom: '1px solid #444',
-    paddingBottom: '6px'
+    borderBottom: '1px solid var(--stroke)',
+    paddingBottom: '6px',
+    textTransform: 'uppercase',
+    letterSpacing: '0.5px'
   },
   settingSectionDivider: {
     height: '1px',
-    background: '#444',
+    background: 'var(--stroke)',
     margin: '4px 0'
   },
   tabBar: {
     display: 'flex',
-    borderBottom: '1px solid #333',
-    background: '#242424'
+    borderBottom: '1px solid var(--stroke)',
+    background: 'var(--bg-layer-2)'
   },
   tab: {
     flex: 1,
@@ -2330,16 +2325,14 @@ const styles = {
     background: 'transparent',
     border: 'none',
     borderBottom: '2px solid transparent',
-    color: '#888',
+    color: 'var(--text-tertiary)',
     fontSize: '12px',
-    fontWeight: '500',
-    cursor: 'pointer',
-    transition: 'all 0.2s'
+    fontWeight: '500'
   },
   tabActive: {
-    color: '#88ccff',
-    borderBottom: '2px solid #88ccff',
-    background: 'rgba(136, 204, 255, 0.05)'
+    color: 'var(--accent)',
+    borderBottom: '2px solid var(--accent)',
+    background: 'var(--accent-soft)'
   },
   settingRow: {
     display: 'flex',
@@ -2350,7 +2343,7 @@ const styles = {
   settingLabel: {
     fontSize: '13px',
     fontWeight: '500',
-    color: '#d0d0d0',
+    color: 'var(--text-primary)',
     minWidth: '120px',
     display: 'flex',
     alignItems: 'center',
@@ -2360,19 +2353,19 @@ const styles = {
     width: '16px',
     height: '16px',
     cursor: 'pointer',
-    accentColor: '#88ccff'
+    accentColor: 'var(--accent)'
   },
   outputStatus: {
     fontSize: '13px',
-    color: '#66ff66',
+    color: 'var(--success)',
     fontWeight: '500',
     display: 'flex',
     alignItems: 'center',
     gap: '8px',
     padding: '8px 12px',
-    background: 'rgba(102, 255, 102, 0.1)',
-    borderRadius: '4px',
-    border: '1px solid rgba(102, 255, 102, 0.3)'
+    background: 'var(--success-soft)',
+    borderRadius: 'var(--radius)',
+    border: '1px solid rgba(74, 222, 128, 0.3)'
   },
   outputStatusDot: {
     fontSize: '20px',
@@ -2382,10 +2375,10 @@ const styles = {
   settingSelect: {
     flex: 1,
     padding: '8px 12px',
-    background: '#1e1e1e',
-    border: '1px solid #444',
-    borderRadius: '4px',
-    color: '#e0e0e0',
+    background: 'var(--bg-base)',
+    border: '1px solid var(--stroke-strong)',
+    borderRadius: 'var(--radius)',
+    color: 'var(--text-primary)',
     fontSize: '12px',
     cursor: 'pointer',
     outline: 'none'
@@ -2393,14 +2386,14 @@ const styles = {
   settingInfo: {
     marginTop: '10px',
     padding: '14px',
-    background: '#1e1e1e',
-    border: '1px solid #444',
-    borderRadius: '4px'
+    background: 'var(--bg-base)',
+    border: '1px solid var(--stroke)',
+    borderRadius: 'var(--radius)'
   },
   settingInfoText: {
     margin: '0 0 8px 0',
     fontSize: '11px',
-    color: '#aaa',
+    color: 'var(--text-secondary)',
     lineHeight: '1.5'
   },
   urlContainer: {
@@ -2412,31 +2405,29 @@ const styles = {
   urlInput: {
     flex: 1,
     padding: '6px 10px',
-    background: '#242424',
-    border: '1px solid #444',
-    borderRadius: '3px',
-    color: '#88ccff',
+    background: 'var(--bg-base)',
+    border: '1px solid var(--stroke-strong)',
+    borderRadius: 'var(--radius-sm)',
+    color: 'var(--accent)',
     fontSize: '11px',
-    fontFamily: 'monospace',
+    fontFamily: 'var(--font-mono)',
     outline: 'none',
     cursor: 'text'
   },
   copyButton: {
     padding: '6px 12px',
-    background: '#2a4a5a',
-    border: '1px solid #3a5a7a',
-    borderRadius: '3px',
-    color: '#88ccff',
+    background: 'var(--accent-soft)',
+    border: '1px solid rgba(76, 194, 255, 0.35)',
+    borderRadius: 'var(--radius-sm)',
+    color: 'var(--accent-hover)',
     fontSize: '11px',
     fontWeight: '600',
-    cursor: 'pointer',
-    transition: 'all 0.2s',
     whiteSpace: 'nowrap'
   },
   playerInfoBox: {
-    background: '#1a1a1a',
-    border: '1px solid #3a3a3a',
-    borderRadius: '6px',
+    background: 'var(--bg-layer-1)',
+    border: '1px solid var(--stroke)',
+    borderRadius: 'var(--radius)',
     padding: '14px',
     display: 'flex',
     flexDirection: 'column',
@@ -2460,11 +2451,11 @@ const styles = {
   playerInfoTitle: {
     fontSize: '13px',
     fontWeight: '600',
-    color: '#e0e0e0'
+    color: 'var(--text-primary)'
   },
   playerInfoDesc: {
     fontSize: '11px',
-    color: '#aaa',
+    color: 'var(--text-secondary)',
     lineHeight: '1.4'
   },
   urlRow: {
@@ -2485,22 +2476,22 @@ const styles = {
   },
   networkDetailLabel: {
     fontWeight: '600',
-    color: '#88ccff'
+    color: 'var(--accent)'
   },
   networkDetailValue: {
-    fontFamily: 'monospace',
-    color: '#e0e0e0',
-    background: '#242424',
+    fontFamily: 'var(--font-mono)',
+    color: 'var(--text-primary)',
+    background: 'var(--bg-base)',
     padding: '3px 7px',
-    borderRadius: '3px',
-    border: '1px solid #333'
+    borderRadius: 'var(--radius-sm)',
+    border: '1px solid var(--stroke)'
   },
   networkNote: {
     fontSize: '11px',
-    color: '#aaa',
+    color: 'var(--text-secondary)',
     lineHeight: '1.5',
     paddingTop: '4px',
-    borderTop: '1px solid #2a2a2a'
+    borderTop: '1px solid var(--stroke-subtle)'
   },
   sectionButtonRow: {
     display: 'flex',
@@ -2510,48 +2501,47 @@ const styles = {
   sectionButton: {
     padding: '7px 14px',
     border: 'none',
-    borderRadius: '4px',
+    borderRadius: 'var(--radius)',
     fontSize: '11px',
     fontWeight: '600',
-    cursor: 'pointer',
-    transition: 'all 0.2s'
+    cursor: 'pointer'
   },
   sectionButtonPrimary: {
-    background: '#0078d4',
+    background: '#0a84e0',
     color: '#fff'
   },
   settingTip: {
     fontSize: '11px',
-    color: '#aaa',
+    color: 'var(--text-secondary)',
     lineHeight: '1.5',
     padding: '8px 10px',
-    background: '#1a1a1a',
-    borderRadius: '4px',
-    border: '1px solid #333',
+    background: 'var(--bg-layer-1)',
+    borderRadius: 'var(--radius)',
+    border: '1px solid var(--stroke)',
     marginTop: '8px'
   },
   obsControlPanel: {
     margin: '0 10px 10px 10px',
-    background: '#0f0f0f',
-    border: '1px solid #333',
-    borderRadius: '6px',
+    background: 'var(--bg-layer-1)',
+    border: '1px solid var(--stroke)',
+    borderRadius: 'var(--radius)',
     overflow: 'hidden',
     flexShrink: 0
   },
   obsControlHeader: {
-    background: '#1e1e1e',
+    background: 'var(--bg-layer-2)',
     padding: '8px 12px',
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
-    borderBottom: '1px solid #333'
+    borderBottom: '1px solid var(--stroke)'
   },
   obsControlTitle: {
     fontSize: '11px',
     fontWeight: '600',
-    color: '#aaa',
+    color: 'var(--text-secondary)',
     textTransform: 'uppercase',
-    letterSpacing: '0.5px'
+    letterSpacing: '0.6px'
   },
   obsControlBody: {
     padding: '10px',
@@ -2561,10 +2551,10 @@ const styles = {
   obsSceneSelect: {
     width: '100%',
     padding: '6px 8px',
-    background: '#1a1a1a',
-    border: '1px solid #333',
-    borderRadius: '4px',
-    color: '#e0e0e0',
+    background: 'var(--bg-base)',
+    border: '1px solid var(--stroke-strong)',
+    borderRadius: 'var(--radius)',
+    color: 'var(--text-primary)',
     fontSize: '11px',
     outline: 'none'
   },
@@ -2579,12 +2569,12 @@ const styles = {
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: '6px 8px',
-    background: '#1a1a1a',
-    borderRadius: '3px'
+    background: 'var(--bg-base)',
+    borderRadius: 'var(--radius-sm)'
   },
   obsSourceName: {
     fontSize: '11px',
-    color: '#d0d0d0',
+    color: 'var(--text-primary)',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
@@ -2593,19 +2583,18 @@ const styles = {
   },
   obsToggleButton: {
     padding: '3px 8px',
-    background: '#3a2a2a',
-    border: '1px solid #664444',
-    borderRadius: '3px',
-    color: '#ff8888',
+    background: 'var(--danger-soft)',
+    border: '1px solid rgba(255, 91, 91, 0.4)',
+    borderRadius: 'var(--radius-sm)',
+    color: '#ff8d8d',
     fontSize: '9px',
     fontWeight: '600',
-    cursor: 'pointer',
     flexShrink: 0
   },
   obsToggleActive: {
-    background: '#2a3a2a',
-    borderColor: '#446644',
-    color: '#88ff88'
+    background: 'var(--success-soft)',
+    borderColor: 'rgba(74, 222, 128, 0.4)',
+    color: '#7ee6a0'
   }
 }
 

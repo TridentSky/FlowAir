@@ -434,7 +434,7 @@ const Playlist = ({
                     <div style={styles.cell}>
                       <div style={{
                         ...styles.statusDot,
-                        background: '#4a9eff'
+                        background: 'var(--accent)'
                       }} />
                     </div>
                     <div style={styles.cell}>{formatStartTime(item.start_time)}</div>
@@ -488,8 +488,8 @@ const Playlist = ({
                     <div style={{
                       width: '12px',
                       height: '12px',
-                      border: '2px solid #666',
-                      borderTop: '2px solid #4a9eff',
+                      border: '2px solid var(--stroke-strong)',
+                      borderTop: '2px solid var(--accent)',
                       borderRadius: '50%',
                       animation: 'spin 1s linear infinite'
                     }} />
@@ -504,7 +504,7 @@ const Playlist = ({
                 <div style={styles.cell}>{formatStartTime(item.start_time)}</div>
                 <div style={styles.cell}>
                   {item.status === 'validating' ? (
-                    <span style={{ color: '#4a9eff', fontSize: '11px' }}>Validating...</span>
+                    <span style={{ color: 'var(--accent)', fontSize: '11px' }}>Validating...</span>
                   ) : (
                     item.duration_formatted || '--:--'
                   )}
@@ -607,9 +607,9 @@ const styles = {
     display: 'flex',
     flexDirection: 'column',
     overflow: 'hidden',
-    background: '#0d0d0d',
-    border: '1px solid #333',
-    borderRadius: '4px'
+    background: 'var(--bg-base)',
+    border: '1px solid var(--stroke)',
+    borderRadius: 'var(--radius)'
   },
   playlistTable: {
     display: 'flex',
@@ -620,17 +620,20 @@ const styles = {
     display: 'grid',
     gridTemplateColumns: '40px 100px 100px 50px 1fr 1fr 180px',
     gap: '1px',
-    background: '#333',
-    padding: '0 1px'
+    background: 'var(--stroke-subtle)',
+    padding: '0 1px',
+    position: 'sticky',
+    top: 0,
+    zIndex: 3
   },
   headerCell: {
-    background: '#1e1e1e',
-    padding: '8px 10px',
-    fontSize: '11px',
+    background: 'var(--bg-layer-2)',
+    padding: '9px 10px',
+    fontSize: '10px',
     fontWeight: '600',
-    color: '#888',
+    color: 'var(--text-tertiary)',
     textTransform: 'uppercase',
-    letterSpacing: '0.5px',
+    letterSpacing: '0.7px',
     userSelect: 'none'
   },
   itemsContainer: {
@@ -642,22 +645,22 @@ const styles = {
     display: 'grid',
     gridTemplateColumns: '40px 100px 100px 50px 1fr 1fr 180px',
     gap: '1px',
-    background: '#333',
+    background: 'var(--stroke-subtle)',
     padding: '0 1px',
     cursor: 'pointer',
-    transition: 'all 0.1s',
+    transition: 'background 0.1s, opacity 0.1s',
     marginBottom: '1px'
   },
   itemPast: {
-    opacity: 0.5,
-    background: '#1a1a1a'
+    opacity: 0.45,
+    background: 'var(--stroke-subtle)'
   },
   itemCorrupted: {
-    background: '#4a1a1a'
+    background: 'var(--stroke-subtle)'
   },
   itemNext: {
-    background: '#3a3a1a',
-    borderLeft: '3px solid #cccc44'
+    background: 'var(--stroke-subtle)',
+    boxShadow: 'inset 3px 0 0 var(--warning)'
   },
   itemPlaying: {
     position: 'relative'
@@ -668,7 +671,8 @@ const styles = {
     left: 0,
     right: 0,
     bottom: 0,
-    background: 'rgba(68, 255, 68, 0.2)',
+    background: 'var(--success-soft)',
+    boxShadow: 'inset 3px 0 0 var(--success)',
     pointerEvents: 'none',
     zIndex: 1
   },
@@ -681,7 +685,8 @@ const styles = {
     left: 0,
     right: 0,
     bottom: 0,
-    background: 'rgba(0, 122, 204, 0.3)',
+    background: 'var(--accent-soft)',
+    boxShadow: 'inset 0 0 0 1px rgba(76, 194, 255, 0.5)',
     pointerEvents: 'none',
     zIndex: 2
   },
@@ -691,7 +696,7 @@ const styles = {
     left: 0,
     right: 0,
     bottom: 0,
-    background: 'rgba(255, 68, 68, 0.25)',
+    background: 'var(--danger-soft)',
     pointerEvents: 'none',
     zIndex: 1
   },
@@ -701,23 +706,23 @@ const styles = {
   },
   dropIndicator: {
     position: 'absolute',
-    top: 0,
+    top: '-1px',
     left: 0,
     right: 0,
-    height: '4px',
-    background: 'linear-gradient(90deg, #88ccff, #66aaff)',
+    height: '2px',
+    background: 'var(--accent)',
     zIndex: 1000,
-    boxShadow: '0 0 8px rgba(136, 204, 255, 0.8), 0 0 16px rgba(136, 204, 255, 0.4)',
+    boxShadow: '0 0 6px rgba(76, 194, 255, 0.9)',
     pointerEvents: 'none'
   },
   itemDragOver: {
-    borderTop: '2px solid #88ccff'
+    borderTop: '2px solid var(--accent)'
   },
   cell: {
-    background: '#1e1e1e',
+    background: 'var(--bg-layer-1)',
     padding: '7px 10px',
     fontSize: '12px',
-    color: '#d0d0d0',
+    color: 'var(--text-primary)',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
@@ -733,26 +738,24 @@ const styles = {
     fontSize: '12px'
   },
   actionButton: {
-    background: '#2a2a2a',
-    border: '1px solid #444',
-    borderRadius: '2px',
-    color: '#e0e0e0',
-    padding: '3px 6px',
-    cursor: 'pointer',
+    background: 'var(--bg-layer-3)',
+    border: '1px solid var(--stroke-strong)',
+    borderRadius: 'var(--radius-sm)',
+    color: 'var(--text-secondary)',
+    padding: '4px 7px',
     fontSize: '10px',
-    marginRight: '3px',
-    transition: 'all 0.15s'
+    fontWeight: '600',
+    marginRight: '3px'
   },
   deleteButton: {
-    background: '#3a2a2a',
-    borderColor: '#664444',
-    color: '#ff8888'
+    background: 'var(--danger-soft)',
+    borderColor: 'rgba(255, 91, 91, 0.4)',
+    color: '#ff8d8d'
   },
   loopActive: {
-    background: '#3a2a5a',
-    borderColor: '#5a3a7a',
-    color: '#cc88ff',
-    boxShadow: '0 0 6px rgba(204, 136, 255, 0.4)'
+    background: 'var(--accent-soft)',
+    borderColor: 'rgba(76, 194, 255, 0.5)',
+    color: 'var(--accent-hover)'
   },
   stopEventRow: {
     width: '100%',
@@ -808,48 +811,48 @@ const styles = {
   },
   contextMenu: {
     position: 'fixed',
-    background: '#2a2a2a',
-    border: '1px solid #444',
-    borderRadius: '4px',
-    boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+    background: 'var(--bg-elevated)',
+    border: '1px solid var(--stroke-strong)',
+    borderRadius: 'var(--radius)',
+    boxShadow: 'var(--shadow-flyout)',
     zIndex: 10000,
-    minWidth: '200px',
-    padding: '4px 0'
+    minWidth: '208px',
+    padding: '5px'
   },
   contextMenuHeader: {
-    padding: '8px 12px',
+    padding: '6px 9px 8px',
     fontSize: '10px',
     fontWeight: '600',
-    color: '#888',
+    color: 'var(--text-tertiary)',
     textTransform: 'uppercase',
-    borderBottom: '1px solid #333',
+    borderBottom: '1px solid var(--stroke)',
+    marginBottom: '4px',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap'
   },
   contextMenuItem: {
     width: '100%',
-    padding: '8px 12px',
+    padding: '8px 10px',
     background: 'transparent',
     border: 'none',
-    color: '#d0d0d0',
+    borderRadius: 'var(--radius-sm)',
+    color: 'var(--text-primary)',
     fontSize: '12px',
-    textAlign: 'left',
-    cursor: 'pointer',
-    transition: 'background 0.1s'
+    textAlign: 'left'
   },
   dropZone: {
     minHeight: '40px',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    color: '#555',
+    color: 'var(--text-tertiary)',
     fontSize: '11px',
     transition: 'all 0.2s'
   },
   dropZoneActive: {
-    background: '#2a2a2a',
-    borderTop: '2px solid #88ccff'
+    background: 'var(--accent-soft)',
+    borderTop: '2px solid var(--accent)'
   }
 }
 
