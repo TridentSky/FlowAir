@@ -31,6 +31,7 @@ const App = () => {
   const [serverElapsed, setServerElapsed] = useState(0)
   const [editMode, setEditMode] = useState(false)
   const [outputVolume, setOutputVolume] = useState(100)
+  const [previewReloadKey, setPreviewReloadKey] = useState(0)
   const [timeFormat, setTimeFormat] = useState(() => {
     return localStorage.getItem('timeFormat') || '12'
   })
@@ -1344,6 +1345,7 @@ const App = () => {
         ipcRenderer.send('reload-output-window')
       }
 
+      setPreviewReloadKey(k => k + 1)
       addLog('Video settings applied', 'info')
     } catch (error) {
       addLog('Error applying video settings', 'error')
@@ -1636,7 +1638,7 @@ const App = () => {
         </div>
 
         <div style={styles.rightPanel}>
-          <Preview currentItem={currentItem} isPlaying={isPlaying} onVideoEnded={handleVideoEnded} outputSettings={outputSettings} />
+          <Preview currentItem={currentItem} isPlaying={isPlaying} onVideoEnded={handleVideoEnded} outputSettings={outputSettings} reloadKey={previewReloadKey} />
           {obsSettings.enabled && obsConnected && (
             <div style={styles.obsControlPanel}>
               <div style={styles.obsControlHeader}>

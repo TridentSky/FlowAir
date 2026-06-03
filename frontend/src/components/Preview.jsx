@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react'
 
-const Preview = ({ currentItem, isPlaying, outputSettings }) => {
+const Preview = ({ currentItem, isPlaying, outputSettings, reloadKey = 0 }) => {
   const [audioLevel, setAudioLevel] = useState(0)
 
-  const previewKey = `${outputSettings?.aspectRatio || '16:9'}-${outputSettings?.scalingMode || 'stretch'}`
+  const previewKey = `${outputSettings?.aspectRatio || '16:9'}-${outputSettings?.scalingMode || 'stretch'}-${reloadKey}`
 
   useEffect(() => {
     const handleMessage = (event) => {
