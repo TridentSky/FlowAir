@@ -1,0 +1,19 @@
+# Normalize line endings: LF in repo, native on checkout
+* text=auto
+
+# Windows-specific scripts keep CRLF
+*.bat text eol=crlf
+*.vbs text eol=crlf
+
+# Source files use LF
+*.py text eol=lf
+*.js text eol=lf
+*.jsx text eol=lf
+*.json text eol=lf
+*.html text eol=lf
+*.md text eol=lf
+
+# Binary assets
+*.png binary
+*.ico binary
+*.jpg binary

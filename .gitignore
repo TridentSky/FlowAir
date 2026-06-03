@@ -1,0 +1,37 @@
+# ===== Python (backend) =====
+backend/venv/
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# ===== Node / frontend =====
+frontend/node_modules/
+frontend/dist/
+frontend/dist-electron/
+frontend/release/
+npm-debug.log*
+yarn-error.log*
+
+# ===== Bundled binaries (download separately, ~286MB) =====
+ffmpeg/
+
+# ===== Runtime / user data =====
+backup.json
+*.flowair
+*.log
+logs/
+
+
+# ===== Editor / OS =====
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== Build artifacts =====
+build/
+*.exe
+*.spec

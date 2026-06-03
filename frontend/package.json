@@ -1,0 +1,44 @@
+{
+  "name": "flowair",
+  "version": "1.0.0",
+  "description": "Professional Broadcast Playout System",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "build": "electron-builder"
+  },
+  "keywords": [
+    "playout",
+    "broadcast",
+    "streaming",
+    "television"
+  ],
+  "author": "FlowAir Team",
+  "license": "MIT",
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.2.1",
+    "electron": "^28.3.3",
+    "electron-builder": "^24.9.1",
+    "vite": "^5.0.8"
+  },
+  "build": {
+    "appId": "com.flowair.broadcast",
+    "productName": "FlowAir",
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "../assets/icon.ico"
+    },
+    "files": [
+      "src/**/*",
+      "public/**/*",
+      "dist/**/*"
+    ]
+  }
+}
