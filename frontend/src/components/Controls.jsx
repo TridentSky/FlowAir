@@ -100,58 +100,57 @@ const Controls = ({ isPlaying, selectedItem, selectedItems = [], onPlay, onStop,
 
 const styles = {
   container: {
-    background: '#1e1e1e',
+    background: 'var(--bg-layer-1)',
     padding: '12px 16px',
-    borderBottom: '1px solid #333'
+    borderBottom: '1px solid var(--stroke)'
   },
   mainButtons: {
     display: 'flex',
-    gap: '10px',
+    gap: '8px',
     marginBottom: '10px'
   },
   button: {
     flex: 1,
-    padding: '10px 16px',
-    border: '1px solid #444',
-    borderRadius: '4px',
+    padding: '11px 16px',
+    border: '1px solid transparent',
+    borderRadius: 'var(--radius)',
     fontSize: '13px',
     fontWeight: '600',
-    cursor: 'pointer',
-    transition: 'all 0.2s',
+    letterSpacing: '0.3px',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: '6px'
+    gap: '7px'
   },
   playButton: {
-    background: '#2a5a2a',
-    color: '#88ff88',
-    border: '1px solid #3a7a3a'
+    background: 'rgba(74, 222, 128, 0.14)',
+    color: '#7ee6a0',
+    border: '1px solid rgba(74, 222, 128, 0.35)'
   },
   stopButton: {
-    background: '#5a2a2a',
-    color: '#ff8888',
-    border: '1px solid #7a3a3a'
+    background: 'var(--danger-soft)',
+    color: '#ff8d8d',
+    border: '1px solid rgba(255, 91, 91, 0.35)'
   },
   nextButton: {
-    background: '#2a4a5a',
-    color: '#88ccff',
-    border: '1px solid #3a5a7a'
+    background: 'var(--accent-soft)',
+    color: 'var(--accent-hover)',
+    border: '1px solid rgba(76, 194, 255, 0.35)'
   },
   cueButton: {
-    background: '#5a4a2a',
-    color: '#ffcc88',
-    border: '1px solid #7a6a3a'
+    background: 'rgba(224, 179, 65, 0.14)',
+    color: '#f0cd7a',
+    border: '1px solid rgba(224, 179, 65, 0.35)'
   },
   buttonDisabled: {
-    opacity: 0.3,
+    opacity: 0.35,
     cursor: 'not-allowed'
   },
   shortcuts: {
     display: 'flex',
     gap: '14px',
     flexWrap: 'wrap',
-    padding: '6px 0',
+    padding: '4px 0',
     minHeight: '26px',
     alignItems: 'center'
   },
@@ -161,28 +160,29 @@ const styles = {
     gap: '6px'
   },
   shortcutKey: {
-    background: '#2a2a2a',
-    color: '#e0e0e0',
-    padding: '3px 8px',
-    borderRadius: '3px',
+    background: 'var(--bg-layer-3)',
+    color: 'var(--text-secondary)',
+    padding: '2px 7px',
+    borderRadius: 'var(--radius-sm)',
     fontSize: '10px',
     fontWeight: '600',
-    border: '1px solid #444',
-    fontFamily: 'monospace'
+    border: '1px solid var(--stroke-strong)',
+    borderBottomWidth: '2px',
+    fontFamily: 'var(--font-mono)'
   },
   shortcutLabel: {
     fontSize: '11px',
-    color: '#999'
+    color: 'var(--text-tertiary)'
   },
   durationInfo: {
     marginLeft: 'auto',
     padding: '3px 10px',
-    background: '#2a3a4a',
-    borderRadius: '3px',
+    background: 'var(--accent-soft)',
+    borderRadius: '999px',
     fontSize: '11px',
-    color: '#4a9eff',
+    color: 'var(--accent-hover)',
     fontWeight: '600',
-    border: '1px solid #3a4a5a'
+    border: '1px solid rgba(76, 194, 255, 0.3)'
   }
 }
 

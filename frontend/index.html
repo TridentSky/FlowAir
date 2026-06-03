@@ -5,6 +5,44 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>FlowAir</title>
   <style>
+    :root {
+      --bg-base: #1b1b1b;
+      --bg-layer-1: #202020;
+      --bg-layer-2: #272727;
+      --bg-layer-3: #2f2f2f;
+      --bg-elevated: #2b2b2b;
+
+      --stroke: #313131;
+      --stroke-strong: #3d3d3d;
+      --stroke-subtle: #2a2a2a;
+
+      --text-primary: #ececec;
+      --text-secondary: #a6a6a6;
+      --text-tertiary: #767676;
+
+      --accent: #4cc2ff;
+      --accent-hover: #62cbff;
+      --accent-pressed: #3bb0ee;
+      --accent-soft: rgba(76, 194, 255, 0.16);
+
+      --success: #4ade80;
+      --success-soft: rgba(74, 222, 128, 0.18);
+      --warning: #e0b341;
+      --danger: #ff5b5b;
+      --danger-soft: rgba(255, 91, 91, 0.16);
+      --live: #ff4d4d;
+
+      --radius-sm: 4px;
+      --radius: 6px;
+      --radius-lg: 8px;
+
+      --shadow-flyout: 0 8px 24px rgba(0, 0, 0, 0.45);
+
+      --font-ui: 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif;
+      --font-display: 'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif;
+      --font-mono: 'Cascadia Code', 'Cascadia Mono', 'Consolas', 'SF Mono', monospace;
+    }
+
     * {
       margin: 0;
       padding: 0;
@@ -12,46 +50,83 @@
     }
     body {
       margin: 0;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+      font-family: var(--font-ui);
+      font-size: 13px;
+      color: var(--text-primary);
       -webkit-font-smoothing: antialiased;
       -moz-osx-font-smoothing: grayscale;
-      background: #1a1a1a;
+      background: var(--bg-base);
       overflow: hidden;
     }
+
+    button {
+      font-family: var(--font-ui);
+    }
+    button:not(:disabled) {
+      cursor: pointer;
+    }
+
     button:focus, input:focus, select:focus, textarea:focus {
       outline: none !important;
     }
+
+    button, input, select, textarea, .fluid {
+      transition: background 0.12s ease, border-color 0.12s ease,
+                  color 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease,
+                  transform 0.06s ease;
+    }
+
+    button:not(:disabled):hover {
+      filter: brightness(1.12);
+    }
+    button:not(:disabled):active {
+      filter: brightness(0.95);
+      transform: translateY(0.5px);
+    }
+    button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
     @keyframes spin {
       0% { transform: rotate(0deg); }
       100% { transform: rotate(360deg); }
     }
 
+    ::selection {
+      background: var(--accent-soft);
+      color: var(--text-primary);
+    }
+
     ::-webkit-scrollbar {
-      width: 10px;
-      height: 10px;
+      width: 12px;
+      height: 12px;
     }
     ::-webkit-scrollbar-track {
-      background: #1a1a1a;
-      border-radius: 5px;
+      background: transparent;
     }
     ::-webkit-scrollbar-thumb {
-      background: #3a3a3a;
-      border-radius: 5px;
-      border: 2px solid #1a1a1a;
+      background: #4a4a4a;
+      border-radius: 6px;
+      border: 3px solid var(--bg-base);
+      background-clip: padding-box;
+      min-height: 32px;
     }
     ::-webkit-scrollbar-thumb:hover {
-      background: #4a4a4a;
+      background: #5a5a5a;
+      background-clip: padding-box;
+      border: 3px solid var(--bg-base);
     }
     ::-webkit-scrollbar-corner {
-      background: #1a1a1a;
+      background: transparent;
     }
     * {
       scrollbar-width: thin;
-      scrollbar-color: #3a3a3a #1a1a1a;
+      scrollbar-color: #4a4a4a transparent;
     }
 
     .close-button-hover:hover {
-      background: #ff4444 !important;
+      background: var(--danger) !important;
       color: #fff !important;
     }
   </style>

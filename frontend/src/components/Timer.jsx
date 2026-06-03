@@ -46,9 +46,9 @@ const Timer = ({ currentItem, isPlaying, serverElapsed = 0 }) => {
 
 const styles = {
   container: {
-    background: '#1e1e1e',
-    padding: '16px 20px',
-    borderBottom: '1px solid #333'
+    background: 'var(--bg-layer-1)',
+    padding: '14px 18px',
+    borderBottom: '1px solid var(--stroke)'
   },
   timeDisplay: {
     display: 'flex',
@@ -57,40 +57,44 @@ const styles = {
     marginBottom: '12px'
   },
   timeLabel: {
-    fontSize: '12px',
-    color: '#888',
+    fontSize: '11px',
+    color: 'var(--text-secondary)',
     fontWeight: '600',
     textTransform: 'uppercase',
-    letterSpacing: '0.5px'
+    letterSpacing: '0.6px'
   },
   timeValue: {
-    fontSize: '32px',
-    fontWeight: '700',
-    color: '#88ccff',
-    fontFamily: 'monospace',
-    letterSpacing: '2px'
+    fontSize: '34px',
+    fontWeight: '600',
+    color: 'var(--accent)',
+    fontFamily: 'var(--font-mono)',
+    letterSpacing: '1px',
+    fontVariantNumeric: 'tabular-nums',
+    lineHeight: 1
   },
   progressBar: {
     width: '100%',
-    height: '8px',
-    background: '#2a2a2a',
-    borderRadius: '4px',
+    height: '6px',
+    background: 'var(--bg-layer-3)',
+    borderRadius: '999px',
     overflow: 'hidden',
     marginBottom: '8px'
   },
   progressFill: {
     height: '100%',
-    background: 'linear-gradient(90deg, #2a5a7a, #88ccff)',
+    background: 'var(--accent)',
+    borderRadius: '999px',
     transition: 'width 0.3s ease'
   },
   timeInfo: {
     display: 'flex',
     justifyContent: 'space-between',
     fontSize: '11px',
-    color: '#666'
+    color: 'var(--text-tertiary)'
   },
   infoText: {
-    fontFamily: 'monospace'
+    fontFamily: 'var(--font-mono)',
+    fontVariantNumeric: 'tabular-nums'
   }
 }
 
