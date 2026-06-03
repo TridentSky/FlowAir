@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react'
 
-const Preview = ({ currentItem, isPlaying }) => {
+const Preview = ({ currentItem, isPlaying, outputSettings }) => {
   const [audioLevel, setAudioLevel] = useState(0)
+
+  const previewKey = `${outputSettings?.aspectRatio || '16:9'}-${outputSettings?.scalingMode || 'stretch'}`
 
   useEffect(() => {
     const handleMessage = (event) => {
@@ -37,6 +39,7 @@ const Preview = ({ currentItem, isPlaying }) => {
 
         <div style={styles.videoArea}>
           <iframe
+            key={previewKey}
             src="http://localhost:8000/player?muted=1"
             style={styles.iframe}
             title="Player Preview"

@@ -64,6 +64,7 @@ const App = () => {
   const [obsStatusMessage, setOBSStatusMessage] = useState('')
   const [obsScenes, setOBSScenes] = useState([])
   const [obsSelectedScene, setOBSSelectedScene] = useState('')
+  const [obsCurrentScene, setObsCurrentScene] = useState('')
   const [obsSources, setOBSSources] = useState([])
   const [showOBSEventModal, setShowOBSEventModal] = useState(false)
   const [obsEventInsertIndex, setOBSEventInsertIndex] = useState(0)
@@ -174,9 +175,13 @@ const App = () => {
           setOBSSelectedScene(data.scenes[0])
         }
       }).catch(() => setOBSScenes([]))
+      api.getOBSCurrentScene().then(data => {
+        if (data && data.scene) setObsCurrentScene(data.scene)
+      }).catch(() => {})
     } else {
       setOBSScenes([])
       setOBSSources([])
+      setObsCurrentScene('')
     }
   }, [obsConnected])
 
@@ -1395,6 +1400,21 @@ const App = () => {
     }
   }
 
+  const handleActivateOBSScene = async () => {
+    if (!obsSelectedScene) return
+    try {
+      const result = await api.setOBSScene(obsSelectedScene)
+      if (result && result.success) {
+        setObsCurrentScene(obsSelectedScene)
+        addLog(`OBS: switched to scene "${obsSelectedScene}"`, 'playback')
+      } else {
+        addLog('Error switching OBS scene', 'error')
+      }
+    } catch {
+      addLog('Error switching OBS scene', 'error')
+    }
+  }
+
   const handleInsertOBSEvent = async (insertIndex, obsScene, obsSource, obsAction, obsTransition = '', obsTransitionDuration = 0, itemId = null) => {
     try {
       pauseWebSocketUpdates.current = true
@@ -1582,7 +1602,7 @@ const App = () => {
         </div>
 
         <div style={styles.rightPanel}>
-          <Preview currentItem={currentItem} isPlaying={isPlaying} onVideoEnded={handleVideoEnded} />
+          <Preview currentItem={currentItem} isPlaying={isPlaying} onVideoEnded={handleVideoEnded} outputSettings={outputSettings} />
           {obsSettings.enabled && obsConnected && (
             <div style={styles.obsControlPanel}>
               <div style={styles.obsControlHeader}>
@@ -1590,15 +1610,28 @@ const App = () => {
                 <span style={{ fontSize: '9px', color: '#44ff44', fontWeight: '600' }}>CONNECTED</span>
               </div>
               <div style={styles.obsControlBody}>
-                <select
-                  style={styles.obsSceneSelect}
-                  value={obsSelectedScene}
-                  onChange={(e) => setOBSSelectedScene(e.target.value)}
-                >
-                  {obsScenes.map(scene => (
-                    <option key={scene} value={scene}>{scene}</option>
-                  ))}
-                </select>
+                <div style={styles.obsSceneRow}>
+                  <select
+                    style={styles.obsSceneSelect}
+                    value={obsSelectedScene}
+                    onChange={(e) => setOBSSelectedScene(e.target.value)}
+                  >
+                    {obsScenes.map(scene => (
+                      <option key={scene} value={scene}>{scene}</option>
+                    ))}
+                  </select>
+                  <button
+                    style={{
+                      ...styles.obsActivateButton,
+                      ...(obsCurrentScene === obsSelectedScene ? styles.obsActivateButtonActive : {})
+                    }}
+                    onClick={handleActivateOBSScene}
+                    disabled={obsCurrentScene === obsSelectedScene}
+                    title={obsCurrentScene === obsSelectedScene ? 'This scene is already live' : 'Switch the program to this scene'}
+                  >
+                    {obsCurrentScene === obsSelectedScene ? 'ON AIR' : 'Activate'}
+                  </button>
+                </div>
                 <div style={styles.obsSourceList}>
                   {obsSources.map(source => (
                     <div key={source.sourceName} style={styles.obsSourceRow}>
@@ -2656,8 +2689,14 @@ const styles = {
     maxHeight: '200px',
     overflowY: 'auto'
   },
+  obsSceneRow: {
+    display: 'flex',
+    gap: '6px',
+    alignItems: 'center'
+  },
   obsSceneSelect: {
-    width: '100%',
+    flex: 1,
+    minWidth: 0,
     padding: '6px 8px',
     background: 'var(--bg-base)',
     border: '1px solid var(--stroke-strong)',
@@ -2665,6 +2704,22 @@ const styles = {
     color: 'var(--text-primary)',
     fontSize: '11px',
     outline: 'none'
+  },
+  obsActivateButton: {
+    flexShrink: 0,
+    padding: '6px 12px',
+    background: 'var(--accent-soft)',
+    border: '1px solid rgba(76, 194, 255, 0.4)',
+    borderRadius: 'var(--radius)',
+    color: 'var(--accent-hover)',
+    fontSize: '10px',
+    fontWeight: '700',
+    letterSpacing: '0.4px'
+  },
+  obsActivateButtonActive: {
+    background: 'var(--success-soft)',
+    borderColor: 'rgba(74, 222, 128, 0.5)',
+    color: '#7ee6a0'
   },
   obsSourceList: {
     marginTop: '8px',
