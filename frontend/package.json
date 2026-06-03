@@ -1,6 +1,6 @@
 {
   "name": "flowair",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Professional Broadcast Playout System",
   "main": "src/main.js",
   "scripts": {

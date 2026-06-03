@@ -6,6 +6,9 @@ import Timer from './components/Timer'
 import LiveIndicator from './components/LiveIndicator'
 import ActivityLog from './components/ActivityLog'
 import { api } from './api'
+import packageJson from '../package.json'
+
+const APP_VERSION = packageJson.version
 
 const App = () => {
   const [playlist, setPlaylist] = useState([])
@@ -1506,8 +1509,11 @@ const App = () => {
     <div style={styles.container} onDragOver={handleDragOver} onDrop={handleDrop} onClick={handleContainerClick}>
       <div style={styles.header}>
         <div style={styles.headerLeft}>
-          <h1 style={styles.title}>FlowAir</h1>
-          <span style={styles.credits}>© Trident Sky</span>
+          <div style={styles.brand}>
+            <h1 style={styles.title}>FlowAir</h1>
+            <span style={styles.credits}>© Trident Sky</span>
+            <span style={styles.version}>v{APP_VERSION}</span>
+          </div>
           <LiveIndicator isPlaying={isPlaying} />
           <span style={styles.date}>{formatDate(currentClock)}</span>
           <span style={styles.clock}>{formatClock(currentClock)}</span>
@@ -2176,6 +2182,11 @@ const styles = {
     alignItems: 'center',
     gap: '20px'
   },
+  brand: {
+    display: 'flex',
+    flexDirection: 'column',
+    lineHeight: 1.1
+  },
   title: {
     fontSize: '17px',
     fontWeight: '600',
@@ -2183,11 +2194,18 @@ const styles = {
     margin: 0
   },
   credits: {
-    fontSize: '11px',
+    fontSize: '10px',
     fontWeight: '400',
     color: 'var(--text-tertiary)',
-    fontStyle: 'italic',
-    marginLeft: '-10px'
+    fontStyle: 'italic'
+  },
+  version: {
+    fontSize: '9px',
+    fontWeight: '600',
+    color: 'var(--accent)',
+    fontFamily: 'var(--font-mono)',
+    letterSpacing: '0.5px',
+    marginTop: '1px'
   },
   date: {
     fontSize: '13px',
