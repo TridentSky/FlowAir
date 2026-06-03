@@ -124,8 +124,12 @@ const Playlist = ({
       }
     }
 
-    setDragOverIndex(targetIndex)
-    setLastValidDragOver(targetIndex)
+    if (targetIndex !== dragOverIndex) {
+      setDragOverIndex(targetIndex)
+    }
+    if (targetIndex !== lastValidDragOver) {
+      setLastValidDragOver(targetIndex)
+    }
   }
 
   const handleDrop = (e, dropIndex) => {

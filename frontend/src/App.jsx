@@ -17,7 +17,7 @@ const App = () => {
   const [activityLogs, setActivityLogs] = useState([])
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [copiedItems, setCopiedItems] = useState([])
-  const [lastSelectedIndex, setLastSelectedIndex] = useState(null)
+  const [lastSelectedId, setLastSelectedId] = useState(null)
   const isCtrlPressed = useRef(false)
   const [showNoteInput, setShowNoteInput] = useState(false)
   const [noteInputValue, setNoteInputValue] = useState('')
@@ -519,10 +519,13 @@ const App = () => {
 
   const handleSelectItem = (item, isCtrl, isShift) => {
     const currentIndex = playlist.findIndex(i => i.id === item.id)
+    const anchorIndex = lastSelectedId !== null
+      ? playlist.findIndex(i => i.id === lastSelectedId)
+      : -1
 
-    if (isShift && lastSelectedIndex !== null) {
-      const start = Math.min(lastSelectedIndex, currentIndex)
-      const end = Math.max(lastSelectedIndex, currentIndex)
+    if (isShift && anchorIndex >= 0) {
+      const start = Math.min(anchorIndex, currentIndex)
+      const end = Math.max(anchorIndex, currentIndex)
       const rangeItems = playlist.slice(start, end + 1)
       setSelectedItems(rangeItems)
     } else if (isCtrl) {
@@ -532,10 +535,10 @@ const App = () => {
       } else {
         setSelectedItems([...selectedItems, item])
       }
-      setLastSelectedIndex(currentIndex)
+      setLastSelectedId(item.id)
     } else {
       setSelectedItems([item])
-      setLastSelectedIndex(currentIndex)
+      setLastSelectedId(item.id)
     }
   }
 
@@ -544,7 +547,7 @@ const App = () => {
 
     if (selectedItems.length === 0) {
       setSelectedItems([playlist[0]])
-      setLastSelectedIndex(0)
+      setLastSelectedId(playlist[0].id)
       return
     }
 
@@ -559,7 +562,7 @@ const App = () => {
 
     if (newIndex !== firstSelectedIndex) {
       setSelectedItems([playlist[newIndex]])
-      setLastSelectedIndex(newIndex)
+      setLastSelectedId(playlist[newIndex].id)
     }
   }
 
@@ -1505,7 +1508,6 @@ const App = () => {
           <Timer currentItem={currentItem} isPlaying={isPlaying} serverElapsed={serverElapsed} />
 
           <Playlist
-            key={timeFormat}
             items={playlist}
             currentItem={currentItem}
             selectedItems={selectedItems}
