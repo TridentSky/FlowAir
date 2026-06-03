@@ -1,6 +1,6 @@
 # FlowAir - Professional 24/7 Broadcast Playout System
 
-**Version**: 1.1.0
+**Version**: 2.0.0
 **Platform**: Windows 11/10
 **Architecture**: Electron + React + Python FastAPI + FFmpeg
 **Developer**: Trident Sky © 2025
@@ -12,6 +12,22 @@
 ---
 
 ## 🆕 Changelog
+
+### 2.0.0
+- **Live player controls** (behind an **Edit-mode** safety lock so operators can't move them by
+  accident): **output volume** slider that affects the live output / OBS in real time, and
+  **timeline scrubbing** (click the progress bar) that seeks the live player. Seeking reuses the
+  proven pause/resume time anchor, so it correctly shifts the following start times (seek a 10-min
+  clip to 5:00 → the next item starts ~5 min later).
+- **Live output format**: changing aspect ratio / scaling now updates the preview, the external
+  output window, and the OBS browser source instantly over WebSocket — no manual refresh.
+- **Preview as a real monitor**: the 16:9 preview reflects the actual output, letterboxed/pillarboxed
+  for vertical (9:16) or other ratios, including stretch/fit/fill.
+- **OBS live scene switch**: an "Activate" button in the OBS panel switches the program scene live
+  (marks the current scene ON AIR).
+- **FFmpeg**: the bundled FFmpeg 8.0.1 is now actually used (previously it relied on system PATH).
+  Playback is direct-to-`<video>` (no transcode): H.264 always works; H.265/HEVC needs the Windows
+  HEVC codec.
 
 ### 1.1.0
 - **24/7 stability**: VU meter rewritten to client-side Web Audio API (removed the FFmpeg
