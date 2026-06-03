@@ -790,6 +790,8 @@ const App = () => {
             await api.insertStopEvent(actualIndex)
           } else if (item.type === 'note') {
             await api.insertNote(actualIndex, item.note)
+          } else if (item.type === 'obs') {
+            await api.insertOBSEvent(actualIndex, item.obs_scene, item.obs_source || '', item.obs_action, item.obs_transition || '', item.obs_transition_duration || 0)
           } else if (item.type === 'video' || item.type === 'image') {
             await api.addItem(item.location, actualIndex)
           }
@@ -828,6 +830,8 @@ const App = () => {
               await api.insertStopEvent(actualIndex)
             } else if (item.type === 'note') {
               await api.insertNote(actualIndex, item.note)
+            } else if (item.type === 'obs') {
+              await api.insertOBSEvent(actualIndex, item.obs_scene, item.obs_source || '', item.obs_action, item.obs_transition || '', item.obs_transition_duration || 0)
             } else if (item.type === 'video' || item.type === 'image') {
               await api.addItem(item.location, actualIndex)
             }
@@ -1004,6 +1008,8 @@ const App = () => {
             await api.insertStopEvent(actualIndex)
           } else if (item.type === 'note') {
             await api.insertNote(actualIndex, item.note)
+          } else if (item.type === 'obs') {
+            await api.insertOBSEvent(actualIndex, item.obs_scene, item.obs_source || '', item.obs_action, item.obs_transition || '', item.obs_transition_duration || 0)
           } else if (item.type === 'video' || item.type === 'image') {
             await api.addItem(item.location, actualIndex)
           }
