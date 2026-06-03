@@ -158,11 +158,47 @@ export const api = {
     return response.json()
   },
 
-  async insertOBSEvent(insertIndex, obsScene, obsSource, obsAction) {
+  async insertOBSEvent(insertIndex, obsScene, obsSource, obsAction, obsTransition = '', obsTransitionDuration = 0, itemId = null) {
     const response = await fetch(`${API_BASE}/playlist/insert_obs_event`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ insert_index: insertIndex, obs_scene: obsScene, obs_source: obsSource, obs_action: obsAction })
+      body: JSON.stringify({
+        insert_index: insertIndex,
+        obs_scene: obsScene,
+        obs_source: obsSource,
+        obs_action: obsAction,
+        obs_transition: obsTransition,
+        obs_transition_duration: obsTransitionDuration,
+        item_id: itemId
+      })
+    })
+    return response.json()
+  },
+
+  async getOBSCurrentScene() {
+    const response = await fetch(`${API_BASE}/obs/current_scene`)
+    return response.json()
+  },
+
+  async setOBSScene(sceneName) {
+    const response = await fetch(`${API_BASE}/obs/set_scene`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scene_name: sceneName })
+    })
+    return response.json()
+  },
+
+  async getOBSTransitions() {
+    const response = await fetch(`${API_BASE}/obs/transitions`)
+    return response.json()
+  },
+
+  async setOBSTransition(transitionName, durationMs = 0) {
+    const response = await fetch(`${API_BASE}/obs/set_transition`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ transition_name: transitionName, duration_ms: durationMs })
     })
     return response.json()
   },

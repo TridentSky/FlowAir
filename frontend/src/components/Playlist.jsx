@@ -15,6 +15,7 @@ const Playlist = ({
   onExternalDrop,
   timeFormat = '12',
   onInsertOBSEvent,
+  onEditOBSEvent,
   obsConnected = false
 }) => {
   const [draggedIndex, setDraggedIndex] = useState(null)
@@ -421,6 +422,10 @@ const Playlist = ({
                     onDrop={(e) => handleDrop(e, index)}
                     onDragEnd={handleDragEnd}
                     onClick={(e) => onSelectItem(item, e.ctrlKey, e.shiftKey)}
+                    onDoubleClick={(e) => {
+                      e.stopPropagation()
+                      if (onEditOBSEvent) onEditOBSEvent(item)
+                    }}
                     onContextMenu={(e) => handleContextMenu(e, item)}
                     style={{
                       ...styles.item,
@@ -443,7 +448,9 @@ const Playlist = ({
                       <span style={styles.typeIcon}>🎬</span>
                     </div>
                     <div style={{ ...styles.cell, color: '#88bbff', fontWeight: '600' }}>
-                      OBS: {item.obs_action?.toUpperCase()} &quot;{item.obs_source}&quot; in &quot;{item.obs_scene}&quot;
+                      {item.obs_action === 'switch_scene'
+                        ? <>OBS: Switch to &quot;{item.obs_scene}&quot;{item.obs_transition ? ` (${item.obs_transition})` : ''}</>
+                        : <>OBS: {item.obs_action?.toUpperCase()} &quot;{item.obs_source}&quot; in &quot;{item.obs_scene}&quot;</>}
                     </div>
                     <div style={styles.cell}></div>
                     <div style={{ ...styles.cell, flex: '0 0 180px' }}></div>

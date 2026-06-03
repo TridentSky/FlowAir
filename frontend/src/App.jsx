@@ -68,6 +68,10 @@ const App = () => {
   const [obsEventSource, setOBSEventSource] = useState('')
   const [obsEventAction, setOBSEventAction] = useState('show')
   const [obsEventSources, setOBSEventSources] = useState([])
+  const [obsEventTransition, setOBSEventTransition] = useState('')
+  const [obsEventTransitionDuration, setOBSEventTransitionDuration] = useState(0)
+  const [obsTransitions, setOBSTransitions] = useState([])
+  const [obsEditingItemId, setOBSEditingItemId] = useState(null)
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -437,7 +441,7 @@ const App = () => {
           } else if (item.type === 'note') {
             await api.insertNote(originalIndex, item.note || '')
           } else if (item.type === 'obs') {
-            await api.insertOBSEvent(originalIndex, item.obs_scene, item.obs_source, item.obs_action)
+            await api.insertOBSEvent(originalIndex, item.obs_scene, item.obs_source, item.obs_action, item.obs_transition || '', item.obs_transition_duration || 0)
           } else if (item.location) {
             const fileCheck = await api.checkFileExists(item.location)
             if (fileCheck.exists) {
@@ -588,7 +592,7 @@ const App = () => {
           const result = await api.insertNote(currentInsertIndex, item.note || 'Note')
           pastedItems.push({ type: 'note', noteId: result.item_id })
         } else if (item.type === 'obs') {
-          const result = await api.insertOBSEvent(currentInsertIndex, item.obs_scene, item.obs_source, item.obs_action)
+          const result = await api.insertOBSEvent(currentInsertIndex, item.obs_scene, item.obs_source, item.obs_action, item.obs_transition || '', item.obs_transition_duration || 0)
           pastedItems.push({ type: 'obs', obsId: result.item_id })
         } else if (item.location) {
           await api.addItem(item.location)
@@ -649,7 +653,9 @@ const App = () => {
           note: item.note,
           obs_scene: item.obs_scene,
           obs_source: item.obs_source,
-          obs_action: item.obs_action
+          obs_action: item.obs_action,
+          obs_transition: item.obs_transition,
+          obs_transition_duration: item.obs_transition_duration
         })),
         originalIndices
       })
@@ -949,7 +955,9 @@ const App = () => {
         loop: item.loop,
         obs_scene: item.obs_scene,
         obs_source: item.obs_source,
-        obs_action: item.obs_action
+        obs_action: item.obs_action,
+        obs_transition: item.obs_transition,
+        obs_transition_duration: item.obs_transition_duration
       }))
 
       const { ipcRenderer } = window.require('electron')
@@ -1378,26 +1386,59 @@ const App = () => {
     }
   }
 
-  const handleInsertOBSEvent = async (insertIndex, obsScene, obsSource, obsAction) => {
+  const handleInsertOBSEvent = async (insertIndex, obsScene, obsSource, obsAction, obsTransition = '', obsTransitionDuration = 0, itemId = null) => {
     try {
       pauseWebSocketUpdates.current = true
-      await api.insertOBSEvent(insertIndex, obsScene, obsSource, obsAction)
+      await api.insertOBSEvent(insertIndex, obsScene, obsSource, obsAction, obsTransition, obsTransitionDuration, itemId)
       const finalState = await api.getPlaylist()
       setPlaylist(finalState.playlist)
       pauseWebSocketUpdates.current = false
-      addLog(`OBS Event: ${obsAction} "${obsSource}" in "${obsScene}"`, 'info')
+      const verb = itemId ? 'updated' : 'added'
+      if (obsAction === 'switch_scene') {
+        addLog(`OBS Event ${verb}: switch to "${obsScene}"`, 'info')
+      } else {
+        addLog(`OBS Event ${verb}: ${obsAction} "${obsSource}" in "${obsScene}"`, 'info')
+      }
     } catch {
       pauseWebSocketUpdates.current = false
-      addLog('Error inserting OBS event', 'error')
+      addLog('Error saving OBS event', 'error')
+    }
+  }
+
+  const loadOBSTransitions = async () => {
+    try {
+      const data = await api.getOBSTransitions()
+      setOBSTransitions(data.transitions || [])
+      return data
+    } catch {
+      setOBSTransitions([])
+      return { transitions: [], current: null }
     }
   }
 
   const handleShowOBSEventModal = (insertIndex) => {
+    setOBSEditingItemId(null)
     setOBSEventInsertIndex(insertIndex)
     setOBSEventScene(obsScenes[0] || '')
     setOBSEventSource('')
     setOBSEventAction('show')
     setOBSEventSources([])
+    setOBSEventTransition('')
+    setOBSEventTransitionDuration(0)
+    loadOBSTransitions()
+    setShowOBSEventModal(true)
+  }
+
+  const handleEditOBSEvent = (item) => {
+    if (!item || item.type !== 'obs') return
+    setOBSEditingItemId(item.id)
+    setOBSEventScene(item.obs_scene || obsScenes[0] || '')
+    setOBSEventSource(item.obs_source || '')
+    setOBSEventAction(item.obs_action || 'show')
+    setOBSEventTransition(item.obs_transition || '')
+    setOBSEventTransitionDuration(item.obs_transition_duration || 0)
+    setOBSEventSources([])
+    loadOBSTransitions()
     setShowOBSEventModal(true)
   }
 
@@ -1523,6 +1564,7 @@ const App = () => {
             onExternalDrop={handleExternalDrop}
             timeFormat={timeFormat}
             onInsertOBSEvent={handleShowOBSEventModal}
+            onEditOBSEvent={handleEditOBSEvent}
             obsConnected={obsConnected}
           />
         </div>
@@ -1650,20 +1692,47 @@ const App = () => {
         </div>
       )}
 
-      {showOBSEventModal && (
+      {showOBSEventModal && (() => {
+        const isSwitchScene = obsEventAction === 'switch_scene'
+        const canSubmit = obsEventScene && (isSwitchScene || obsEventSource)
+        const submitOBSEvent = async () => {
+          if (!canSubmit) return
+          await handleInsertOBSEvent(
+            obsEventInsertIndex,
+            obsEventScene,
+            isSwitchScene ? '' : obsEventSource,
+            obsEventAction,
+            isSwitchScene ? obsEventTransition : '',
+            isSwitchScene ? Number(obsEventTransitionDuration) || 0 : 0,
+            obsEditingItemId
+          )
+          setShowOBSEventModal(false)
+        }
+        return (
         <div style={styles.modalOverlay} onKeyDown={(e) => {
           if (e.key === 'Escape') {
             setShowOBSEventModal(false)
-          } else if (e.key === 'Enter' && obsEventScene && obsEventSource) {
-            handleInsertOBSEvent(obsEventInsertIndex, obsEventScene, obsEventSource, obsEventAction)
-            setShowOBSEventModal(false)
+          } else if (e.key === 'Enter') {
+            submitOBSEvent()
           }
         }}>
           <div style={styles.modal}>
-            <div style={styles.modalHeader}>Insert OBS Event</div>
+            <div style={styles.modalHeader}>{obsEditingItemId ? 'Edit OBS Event' : 'Insert OBS Event'}</div>
             <div style={styles.modalBody}>
               <div style={styles.settingRow}>
-                <label style={styles.settingLabel}>Scene</label>
+                <label style={styles.settingLabel}>Action</label>
+                <select
+                  style={styles.settingSelect}
+                  value={obsEventAction}
+                  onChange={(e) => setOBSEventAction(e.target.value)}
+                >
+                  <option value="switch_scene">Switch Scene (Program)</option>
+                  <option value="show">Show Source</option>
+                  <option value="hide">Hide Source</option>
+                </select>
+              </div>
+              <div style={styles.settingRow}>
+                <label style={styles.settingLabel}>{isSwitchScene ? 'Target Scene' : 'Scene'}</label>
                 <select
                   style={styles.settingSelect}
                   value={obsEventScene}
@@ -1672,41 +1741,56 @@ const App = () => {
                   {obsScenes.map(s => <option key={s} value={s}>{s}</option>)}
                 </select>
               </div>
-              <div style={styles.settingRow}>
-                <label style={styles.settingLabel}>Source</label>
-                <select
-                  style={styles.settingSelect}
-                  value={obsEventSource}
-                  onChange={(e) => setOBSEventSource(e.target.value)}
-                >
-                  {obsEventSources.map(s => (
-                    <option key={s.sourceName} value={s.sourceName}>{s.sourceName}</option>
-                  ))}
-                </select>
-              </div>
-              <div style={styles.settingRow}>
-                <label style={styles.settingLabel}>Action</label>
-                <select
-                  style={styles.settingSelect}
-                  value={obsEventAction}
-                  onChange={(e) => setOBSEventAction(e.target.value)}
-                >
-                  <option value="show">Show (Make Visible)</option>
-                  <option value="hide">Hide (Make Invisible)</option>
-                </select>
-              </div>
+              {!isSwitchScene && (
+                <div style={styles.settingRow}>
+                  <label style={styles.settingLabel}>Source</label>
+                  <select
+                    style={styles.settingSelect}
+                    value={obsEventSource}
+                    onChange={(e) => setOBSEventSource(e.target.value)}
+                  >
+                    <option value="">-- Select a source --</option>
+                    {obsEventSources.map(s => (
+                      <option key={s.sourceName} value={s.sourceName}>{s.sourceName}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              {isSwitchScene && (
+                <>
+                  <div style={styles.settingRow}>
+                    <label style={styles.settingLabel}>Transition</label>
+                    <select
+                      style={styles.settingSelect}
+                      value={obsEventTransition}
+                      onChange={(e) => setOBSEventTransition(e.target.value)}
+                    >
+                      <option value="">Use current transition</option>
+                      {obsTransitions.map(t => <option key={t} value={t}>{t}</option>)}
+                    </select>
+                  </div>
+                  <div style={styles.settingRow}>
+                    <label style={styles.settingLabel}>Duration (ms)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="50"
+                      style={styles.settingSelect}
+                      value={obsEventTransitionDuration}
+                      onChange={(e) => setOBSEventTransitionDuration(e.target.value)}
+                      placeholder="0 = keep current"
+                    />
+                  </div>
+                </>
+              )}
             </div>
             <div style={styles.modalButtons}>
               <button
-                style={{...styles.modalButton, ...styles.modalButtonConfirm}}
-                onClick={async () => {
-                  if (obsEventScene && obsEventSource) {
-                    await handleInsertOBSEvent(obsEventInsertIndex, obsEventScene, obsEventSource, obsEventAction)
-                  }
-                  setShowOBSEventModal(false)
-                }}
+                style={{...styles.modalButton, ...styles.modalButtonPrimary, ...(!canSubmit && { opacity: 0.45, cursor: 'not-allowed' })}}
+                disabled={!canSubmit}
+                onClick={submitOBSEvent}
               >
-                Insert
+                {obsEditingItemId ? 'Save' : 'Insert'}
               </button>
               <button
                 style={{...styles.modalButton, ...styles.modalButtonCancel}}
@@ -1717,7 +1801,8 @@ const App = () => {
             </div>
           </div>
         </div>
-      )}
+        )
+      })()}
 
       {showOutputSettings && (
         <div style={styles.modalOverlay}>
