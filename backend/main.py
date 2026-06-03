@@ -413,6 +413,11 @@ async def get_output_settings():
 async def update_output_settings(settings: dict):
     global output_settings
     output_settings.update(settings)
+    await broadcast_update({
+        "type": "output_settings_changed",
+        "aspectRatio": output_settings.get("aspectRatio", "16:9"),
+        "scalingMode": output_settings.get("scalingMode", "stretch")
+    })
     return {"success": True, "settings": output_settings}
 
 @app.get("/network_info")
@@ -578,7 +583,9 @@ async def get_player_state(request: Request):
         "current_item": current_item,
         "is_playing": playlist_manager.is_playing,
         "elapsed": max(0, elapsed),
-        "volume": playlist_manager.output_volume
+        "volume": playlist_manager.output_volume,
+        "aspectRatio": output_settings.get("aspectRatio", "16:9"),
+        "scalingMode": output_settings.get("scalingMode", "stretch")
     }
 
 @app.get("/player")
@@ -768,6 +775,43 @@ async def player_page(request: Request):
                 }
             }
 
+            function applyOutputSettings(aspect, scaling) {
+                const fitMap = { stretch: 'fill', fit: 'contain', fill: 'cover' };
+                const objectFit = fitMap[scaling] || 'fill';
+                const container = document.getElementById('container');
+                if (container) {
+                    if (aspect && aspect !== '16:9') {
+                        container.style.position = 'absolute';
+                        container.style.top = '0';
+                        container.style.left = '0';
+                        container.style.right = '0';
+                        container.style.bottom = '0';
+                        container.style.margin = 'auto';
+                        container.style.aspectRatio = aspect.replace(':', '/');
+                        container.style.width = '';
+                        container.style.height = '';
+                        container.style.maxWidth = '100vw';
+                        container.style.maxHeight = '100vh';
+                        container.style.transform = '';
+                    } else {
+                        container.style.position = '';
+                        container.style.top = '';
+                        container.style.left = '';
+                        container.style.right = '';
+                        container.style.bottom = '';
+                        container.style.margin = '';
+                        container.style.aspectRatio = '';
+                        container.style.width = '100vw';
+                        container.style.height = '100vh';
+                        container.style.maxWidth = '';
+                        container.style.maxHeight = '';
+                        container.style.transform = '';
+                    }
+                }
+                video.style.objectFit = objectFit;
+                image.style.objectFit = objectFit;
+            }
+
             function connectWebSocket() {
                 const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
                 ws = new WebSocket(protocol + '//' + window.location.host + '/ws');
@@ -787,6 +831,8 @@ async def player_page(request: Request):
 
                     if (data.type === 'playback_state_changed') {
                         handlePlaybackState(data);
+                    } else if (data.type === 'output_settings_changed') {
+                        applyOutputSettings(data.aspectRatio, data.scalingMode);
                     } else if (data.type === 'volume_changed') {
                         applyVolume(data.volume);
                     } else if (data.type === 'player_seek') {
@@ -840,6 +886,9 @@ async def player_page(request: Request):
 
                 if (typeof data.volume === 'number') {
                     applyVolume(data.volume);
+                }
+                if (data.aspectRatio) {
+                    applyOutputSettings(data.aspectRatio, data.scalingMode);
                 }
 
                 if (!item) {
