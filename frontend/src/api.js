@@ -175,6 +175,24 @@ export const api = {
     return response.json()
   },
 
+  async seekPlayer(position) {
+    const response = await fetch(`${API_BASE}/player/seek`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ position })
+    })
+    return response.json()
+  },
+
+  async setPlayerVolume(volume) {
+    const response = await fetch(`${API_BASE}/player/volume`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ volume })
+    })
+    return response.json()
+  },
+
   async getOBSCurrentScene() {
     const response = await fetch(`${API_BASE}/obs/current_scene`)
     return response.json()

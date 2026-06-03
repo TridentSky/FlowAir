@@ -38,6 +38,7 @@ class PlaylistManager:
         self.validation_semaphore = threading.Semaphore(5)
         self.on_playback_change = None
         self.on_obs_event = None
+        self.output_volume = 100
         self.clear_playlist_on_startup()
         self._start_cleanup_thread()
         self._start_force_timing_thread()
@@ -461,6 +462,37 @@ class PlaylistManager:
                 item["loop"] = not item.get("loop", False)
                 return item["loop"]
         return False
+
+    def set_output_volume(self, volume):
+        try:
+            self.output_volume = max(0, min(100, int(volume)))
+        except (TypeError, ValueError):
+            pass
+        return self.output_volume
+
+    def seek(self, position_seconds):
+        current_item = self.get_current_item()
+        if not current_item or current_item.get("type") != "video":
+            return False
+        if self.current_video_start_time is None:
+            return False
+
+        position = max(0.0, float(position_seconds))
+        duration = current_item.get("duration")
+        if duration:
+            position = min(position, float(duration))
+
+        now = datetime.now()
+        self.current_video_start_time = now - timedelta(seconds=position)
+        self.current_video_elapsed = position
+        self.total_pause_time = 0
+        if self.is_paused:
+            self.pause_time = now
+
+        self.absolute_schedule = {}
+        self._calculate_absolute_schedule()
+        self.recalculate_start_times()
+        return True
 
     def mark_as_corrupted(self, item_id):
         for item in self.playlist:

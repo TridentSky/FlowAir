@@ -29,6 +29,8 @@ const App = () => {
   const lastAction = useRef(null)
   const pauseWebSocketUpdates = useRef(false)
   const [serverElapsed, setServerElapsed] = useState(0)
+  const [editMode, setEditMode] = useState(false)
+  const [outputVolume, setOutputVolume] = useState(100)
   const [timeFormat, setTimeFormat] = useState(() => {
     return localStorage.getItem('timeFormat') || '12'
   })
@@ -120,6 +122,17 @@ const App = () => {
         }
         if (data.playlist) {
           setPlaylist(data.playlist)
+        }
+      } else if (data.type === 'volume_changed') {
+        if (typeof data.volume === 'number') {
+          setOutputVolume(data.volume)
+        }
+      } else if (data.type === 'player_seek') {
+        if (data.playlist) {
+          setPlaylist(data.playlist)
+        }
+        if (typeof data.position === 'number') {
+          setServerElapsed(Math.floor(data.position))
         }
       } else if (data.type === 'file_missing') {
         addLog(`File missing: ${data.message}`, 'error')
@@ -1042,6 +1055,18 @@ const App = () => {
   const handleVideoEnded = useCallback(async () => {
   }, [isPlaying])
 
+  const handleVolumeChange = (value) => {
+    const vol = Math.max(0, Math.min(100, Math.round(value)))
+    setOutputVolume(vol)
+    api.setPlayerVolume(vol).catch(() => {})
+  }
+
+  const handleSeek = (position) => {
+    if (!currentItem || currentItem.type !== 'video') return
+    setServerElapsed(Math.floor(position))
+    api.seekPlayer(position).catch(() => addLog('Error seeking video', 'error'))
+  }
+
   const handleCue = async (itemId) => {
     try {
       await api.cue(itemId)
@@ -1578,7 +1603,16 @@ const App = () => {
             onCue={() => selectedItem && handleCue(selectedItem.id)}
           />
 
-          <Timer currentItem={currentItem} isPlaying={isPlaying} serverElapsed={serverElapsed} />
+          <Timer
+            currentItem={currentItem}
+            isPlaying={isPlaying}
+            serverElapsed={serverElapsed}
+            editMode={editMode}
+            onToggleEditMode={setEditMode}
+            onSeek={handleSeek}
+            volume={outputVolume}
+            onVolumeChange={handleVolumeChange}
+          />
 
           <Playlist
             items={playlist}

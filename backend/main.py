@@ -227,6 +227,12 @@ class OBSSetTransitionRequest(BaseModel):
     transition_name: str = ""
     duration_ms: int = 0
 
+class SeekRequest(BaseModel):
+    position: float
+
+class VolumeRequest(BaseModel):
+    volume: int
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -339,6 +345,28 @@ async def next_item():
         "is_playing": playlist_manager.is_playing
     })
     return {"success": True}
+
+@app.post("/player/seek")
+async def player_seek(request: SeekRequest):
+    success = playlist_manager.seek(request.position)
+    if success:
+        await broadcast_update({
+            "type": "player_seek",
+            "position": request.position,
+            "current_item": playlist_manager.get_current_item(),
+            "is_playing": playlist_manager.is_playing,
+            "playlist": playlist_manager.get_playlist()
+        })
+    return {"success": success}
+
+@app.post("/player/volume")
+async def player_volume(request: VolumeRequest):
+    volume = playlist_manager.set_output_volume(request.volume)
+    await broadcast_update({
+        "type": "volume_changed",
+        "volume": volume
+    })
+    return {"success": True, "volume": volume}
 
 @app.post("/player/cue")
 async def cue_item(request: CueRequest):
@@ -549,7 +577,8 @@ async def get_player_state(request: Request):
     return {
         "current_item": current_item,
         "is_playing": playlist_manager.is_playing,
-        "elapsed": max(0, elapsed)
+        "elapsed": max(0, elapsed),
+        "volume": playlist_manager.output_volume
     }
 
 @app.get("/player")
@@ -732,6 +761,13 @@ async def player_page(request: Request):
                 video.muted = false;
             }
 
+            function applyVolume(v) {
+                if (isMuted) return;
+                if (typeof v === 'number') {
+                    video.volume = Math.max(0, Math.min(1, v / 100));
+                }
+            }
+
             function connectWebSocket() {
                 const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
                 ws = new WebSocket(protocol + '//' + window.location.host + '/ws');
@@ -751,6 +787,19 @@ async def player_page(request: Request):
 
                     if (data.type === 'playback_state_changed') {
                         handlePlaybackState(data);
+                    } else if (data.type === 'volume_changed') {
+                        applyVolume(data.volume);
+                    } else if (data.type === 'player_seek') {
+                        const item = data.current_item;
+                        if (item && item.id === currentItemId && item.type === 'video' && !isLoadingNewItem) {
+                            try { video.currentTime = Math.max(0, data.position || 0); } catch (e) {}
+                            if (data.is_playing) {
+                                const p = video.play();
+                                if (p !== undefined) p.catch(() => {});
+                            }
+                        } else {
+                            handlePlaybackState(data);
+                        }
                     } else if (data.type === 'item_cued') {
                         const item = data.current_item;
                         if (item) {
@@ -788,6 +837,10 @@ async def player_page(request: Request):
 
             function handlePlaybackState(data) {
                 const item = data.current_item;
+
+                if (typeof data.volume === 'number') {
+                    applyVolume(data.volume);
+                }
 
                 if (!item) {
                     video.style.display = 'none';
