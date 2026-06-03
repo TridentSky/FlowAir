@@ -62,8 +62,6 @@ async def lifespan(app: FastAPI):
             playlist_manager.cleanup_thread.join(timeout=2)
         if hasattr(playlist_manager, 'force_timing_thread') and playlist_manager.force_timing_thread.is_alive():
             playlist_manager.force_timing_thread.join(timeout=2)
-        if hasattr(playlist_manager, 'audio_thread') and playlist_manager.audio_thread and playlist_manager.audio_thread.is_alive():
-            playlist_manager.audio_thread.join(timeout=1)
     except Exception as e:
         pass
 
@@ -505,10 +503,6 @@ async def obs_set_visibility(request: OBSSourceActionRequest):
     )
     return result
 
-@app.get("/audio-level")
-async def get_audio_level():
-    return {"level": playlist_manager.get_audio_level()}
-
 @app.get("/player/state")
 async def get_player_state(request: Request):
     check_network_access(request)
@@ -641,8 +635,70 @@ async def player_page(request: Request):
             let reconnectAttempts = 0;
             const maxReconnectDelay = 10000;
 
+            let audioCtx = null;
+            let analyserNode = null;
+            let meterData = null;
+            let meterSmooth = 0;
+            let meterStarted = false;
+            let lastMeterPost = 0;
+
+            function meterTick(ts) {
+                requestAnimationFrame(meterTick);
+                if (!analyserNode) return;
+                if (ts - lastMeterPost < 50) return;
+                lastMeterPost = ts;
+                analyserNode.getFloatTimeDomainData(meterData);
+                let sum = 0;
+                for (let i = 0; i < meterData.length; i++) {
+                    sum += meterData[i] * meterData[i];
+                }
+                const rms = Math.sqrt(sum / meterData.length);
+                let level = 0;
+                if (rms > 0.0000001) {
+                    const db = 20 * Math.log10(rms);
+                    level = Math.max(0, Math.min(100, (db + 60) * (100 / 60)));
+                }
+                meterSmooth = (0.5 * level) + (0.5 * meterSmooth);
+                const out = meterSmooth < 2 ? 0 : meterSmooth;
+                try {
+                    window.parent.postMessage({ type: 'flowair-audio-level', level: out }, '*');
+                } catch (e) {}
+            }
+
+            function setupAudioMeter() {
+                if (meterStarted) return;
+                meterStarted = true;
+                try {
+                    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+                    audioCtx = new AudioCtx();
+                    const sourceNode = audioCtx.createMediaElementSource(video);
+                    analyserNode = audioCtx.createAnalyser();
+                    analyserNode.fftSize = 1024;
+                    meterData = new Float32Array(analyserNode.fftSize);
+                    const gainNode = audioCtx.createGain();
+                    gainNode.gain.value = 0;
+                    sourceNode.connect(analyserNode);
+                    analyserNode.connect(gainNode);
+                    gainNode.connect(audioCtx.destination);
+                    requestAnimationFrame(meterTick);
+                } catch (e) {
+                    meterStarted = false;
+                    analyserNode = null;
+                    video.muted = true;
+                }
+            }
+
+            function resumeAudioCtx() {
+                if (audioCtx && audioCtx.state === 'suspended') {
+                    audioCtx.resume().catch(() => {});
+                }
+            }
+
             if (isMuted) {
-                video.muted = true;
+                setupAudioMeter();
+                video.addEventListener('playing', resumeAudioCtx);
+            } else {
+                video.muted = false;
             }
 
             function connectWebSocket() {

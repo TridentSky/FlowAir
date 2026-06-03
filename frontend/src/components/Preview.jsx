@@ -4,26 +4,18 @@ const Preview = ({ currentItem, isPlaying }) => {
   const [audioLevel, setAudioLevel] = useState(0)
 
   useEffect(() => {
-    let intervalId = null
-
-    if (isPlaying && currentItem && currentItem.type === 'video') {
-      intervalId = setInterval(async () => {
-        try {
-          const response = await fetch('http://localhost:8000/audio-level')
-          const data = await response.json()
-          setAudioLevel(data.level || 0)
-        } catch (error) {
-          setAudioLevel(0)
-        }
-      }, 50)
-    } else {
-      setAudioLevel(0)
-    }
-
-    return () => {
-      if (intervalId) {
-        clearInterval(intervalId)
+    const handleMessage = (event) => {
+      if (event.data && event.data.type === 'flowair-audio-level') {
+        setAudioLevel(event.data.level || 0)
       }
+    }
+    window.addEventListener('message', handleMessage)
+    return () => window.removeEventListener('message', handleMessage)
+  }, [])
+
+  useEffect(() => {
+    if (!(isPlaying && currentItem && currentItem.type === 'video')) {
+      setAudioLevel(0)
     }
   }, [isPlaying, currentItem])
 

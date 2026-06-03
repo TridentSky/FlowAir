@@ -4,9 +4,7 @@ import gc
 import time
 from datetime import datetime, timedelta
 from file_validator import FileValidator
-import subprocess
 import threading
-import queue
 
 
 
@@ -22,13 +20,6 @@ class PlaylistManager:
         self.current_video_elapsed = 0
         self.validator = FileValidator()
         self.next_id = 1
-        self.audio_level = 0
-        self.audio_level_smooth = 0
-        self.audio_process = None
-        self.audio_thread = None
-        self.audio_queue = queue.Queue()
-        self.current_audio_file = None
-        self.open_files = {}
         self.last_cleanup_time = datetime.now()
         self.cleanup_thread = None
         self.running = True
@@ -41,6 +32,7 @@ class PlaylistManager:
         self.absolute_schedule = {}
         self.playlist_start_time = None
         self.validation_cache = {}
+        self.validation_cache_max = 2000
         self.active_validations = set()
         self.validation_completed = False
         self.validation_semaphore = threading.Semaphore(5)
@@ -263,12 +255,9 @@ class PlaylistManager:
             still_in_playlist = any(item.get("location") == filepath for item in self.playlist)
 
             if not still_in_playlist:
-                if self.current_audio_file == filepath:
-                    self.stop_audio_analysis()
-                self.close_file(filepath)
-
+                if filepath in self.validation_cache:
+                    del self.validation_cache[filepath]
                 gc.collect()
-                time.sleep(0.1)
 
         if self.is_playing:
             self.absolute_schedule = {}
@@ -327,10 +316,6 @@ class PlaylistManager:
             self.current_video_elapsed = 0
             self.total_pause_time = 0
 
-        current_item = self.get_current_item()
-        if current_item and current_item.get("type") == "video" and current_item.get("location"):
-            self.start_audio_analysis(current_item["location"])
-
         self._calculate_absolute_schedule()
         self.recalculate_start_times()
 
@@ -339,7 +324,6 @@ class PlaylistManager:
             self.is_playing = False
             self.is_paused = True
             self.pause_time = datetime.now()
-            self.stop_audio_analysis()
             self.next_video_scheduled_time = None
             self.scheduled_item_id = None
 
@@ -348,7 +332,6 @@ class PlaylistManager:
             self.is_playing = False
             self.is_paused = True
             self.pause_time = datetime.now()
-            self.stop_audio_analysis()
             self.next_video_scheduled_time = None
             self.scheduled_item_id = None
 
@@ -366,8 +349,6 @@ class PlaylistManager:
 
             self.last_next_time = now
             was_playing = self.is_playing
-
-            self.stop_audio_analysis()
 
             if self.current_index >= 0 and self.current_index < len(self.playlist):
                 current_item = self.playlist[self.current_index]
@@ -427,11 +408,6 @@ class PlaylistManager:
                 self.absolute_schedule = {}
                 self._calculate_absolute_schedule()
 
-                next_item = self.get_current_item()
-
-                if next_item and next_item.get("type") == "video" and next_item.get("location"):
-                    self.start_audio_analysis(next_item["location"])
-
             self.recalculate_start_times()
 
             if self.on_playback_change:
@@ -444,7 +420,6 @@ class PlaylistManager:
             self.next_lock.release()
 
     def cue(self, item_id):
-        self.stop_audio_analysis()
         self.next_video_scheduled_time = None
         self.scheduled_item_id = None
         for idx, item in enumerate(self.playlist):
@@ -472,116 +447,6 @@ class PlaylistManager:
                 return item["loop"]
         return False
 
-    def start_audio_analysis(self, filepath):
-        self.stop_audio_analysis()
-        self.audio_level = 0
-        self.current_audio_file = filepath
-
-        self.audio_thread = threading.Thread(target=self._audio_analysis_loop, daemon=True)
-        self.audio_thread.start()
-
-    def _audio_analysis_loop(self):
-        from config import Config
-        import time
-
-        config = Config()
-
-        while self.is_playing and self.current_audio_file:
-            try:
-                elapsed = 0
-                if self.current_video_start_time:
-                    elapsed = (datetime.now() - self.current_video_start_time).total_seconds() - self.total_pause_time
-
-                elapsed = max(0, elapsed)
-
-                cmd = [
-                    config.get_ffmpeg_path(),
-                    '-ss', str(elapsed),
-                    '-t', '0.1',
-                    '-i', self.current_audio_file,
-                    '-vn',
-                    '-af', 'volumedetect',
-                    '-f', 'null',
-                    '-'
-                ]
-
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    encoding='utf-8',
-                    errors='ignore',
-                    timeout=0.5,
-                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-                )
-
-                if result.stderr and 'mean_volume:' in result.stderr:
-                    for line in result.stderr.split('\n'):
-                        if 'mean_volume:' in line:
-                            try:
-                                parts = line.split('mean_volume:')
-                                if len(parts) > 1:
-                                    db_str = parts[1].strip().split()[0]
-                                    db_value = float(db_str)
-                                    raw_level = max(0, min(100, (db_value + 60) * (100 / 60)))
-
-                                    smoothing_factor = 0.95
-                                    self.audio_level_smooth = (smoothing_factor * raw_level) + ((1 - smoothing_factor) * self.audio_level_smooth)
-
-                                    if self.audio_level_smooth < 2:
-                                        self.audio_level = 0
-                                    else:
-                                        self.audio_level = self.audio_level_smooth
-                                    break
-                            except:
-                                pass
-                else:
-                    self.audio_level_smooth = self.audio_level_smooth * 0.1
-                    if self.audio_level_smooth < 2:
-                        self.audio_level = 0
-                    else:
-                        self.audio_level = self.audio_level_smooth
-
-                time.sleep(0.03)
-
-            except:
-                time.sleep(0.03)
-
-    def stop_audio_analysis(self):
-        self.current_audio_file = None
-
-        if self.audio_thread and self.audio_thread.is_alive():
-            try:
-                self.audio_thread.join(timeout=0.5)
-            except:
-                pass
-        self.audio_thread = None
-
-        if self.audio_process:
-            try:
-                self.audio_process.terminate()
-                self.audio_process.wait(timeout=1)
-            except:
-                try:
-                    self.audio_process.kill()
-                except:
-                    pass
-            self.audio_process = None
-
-        self.audio_level = 0
-        self.audio_level_smooth = 0
-
-    def close_file(self, filepath):
-        if filepath in self.open_files:
-            try:
-                self.open_files[filepath].close()
-            except:
-                pass
-            del self.open_files[filepath]
-
-    def close_all_files(self):
-        for filepath in list(self.open_files.keys()):
-            self.close_file(filepath)
-
     def mark_as_corrupted(self, item_id):
         for item in self.playlist:
             if item["id"] == item_id:
@@ -589,11 +454,6 @@ class PlaylistManager:
                 if item["location"] in self.validation_cache:
                     del self.validation_cache[item["location"]]
                 break
-
-        self.audio_level = 0
-
-    def get_audio_level(self):
-        return self.audio_level
 
     def _start_cleanup_thread(self):
         self.cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
@@ -662,20 +522,6 @@ class PlaylistManager:
                     if item.get("location"):
                         files_in_playlist.add(item.get("location"))
 
-                current_file = None
-                if self.current_index >= 0 and self.current_index < len(self.playlist):
-                    current_item = self.playlist[self.current_index]
-                    if current_item.get("location"):
-                        current_file = current_item["location"]
-
-                files_to_close = []
-                for filepath in list(self.open_files.keys()):
-                    if filepath not in files_in_playlist or filepath != current_file:
-                        files_to_close.append(filepath)
-
-                for filepath in files_to_close:
-                    self.close_file(filepath)
-
                 self.validation_threads = [t for t in self.validation_threads if t.is_alive()]
 
                 cache_files = list(self.validation_cache.keys())
@@ -683,6 +529,11 @@ class PlaylistManager:
                     if not os.path.exists(filepath) or filepath not in files_in_playlist:
                         if filepath in self.validation_cache:
                             del self.validation_cache[filepath]
+
+                if len(self.validation_cache) > self.validation_cache_max:
+                    overflow = len(self.validation_cache) - self.validation_cache_max
+                    for filepath in list(self.validation_cache.keys())[:overflow]:
+                        del self.validation_cache[filepath]
 
                 self.last_cleanup_time = datetime.now()
 
