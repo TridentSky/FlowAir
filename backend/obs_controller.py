@@ -160,8 +160,79 @@ class OBSController:
             except Exception as e:
                 return {"success": False, "error": str(e)}
 
-    def execute_obs_event(self, obs_scene, obs_source, obs_action):
-        if not self.connected or not self.client:
+    def get_current_scene(self):
+        with self.lock:
+            if not self.connected or not self.client:
+                return None
+            try:
+                resp = self.client.get_current_program_scene()
+                raw = resp.__dict__ if hasattr(resp, '__dict__') else {}
+                for k, v in raw.items():
+                    kl = k.lower().replace('_', '')
+                    if kl in ('currentprogramscenename', 'scenename') and v:
+                        return str(v)
+                return None
+            except:
+                return None
+
+    def set_current_scene(self, scene_name):
+        with self.lock:
+            if not self.connected or not self.client:
+                return {"success": False, "error": "Not connected"}
+            try:
+                self.client.set_current_program_scene(scene_name)
+                return {"success": True}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+
+    def get_transitions(self):
+        with self.lock:
+            if not self.connected or not self.client:
+                return {"transitions": [], "current": None, "duration": None}
+            try:
+                resp = self.client.get_scene_transition_list()
+                raw = resp.__dict__ if hasattr(resp, '__dict__') else {}
+                transitions = []
+                current = None
+                for k, v in raw.items():
+                    kl = k.lower().replace('_', '')
+                    if isinstance(v, list):
+                        for t in v:
+                            td = t if isinstance(t, dict) else getattr(t, '__dict__', {})
+                            for tk, tv in td.items():
+                                if tk.lower().replace('_', '') == 'transitionname' and tv:
+                                    transitions.append(str(tv))
+                    elif kl == 'currentscenetransitionname' and v:
+                        current = str(v)
+                return {"transitions": transitions, "current": current}
+            except:
+                return {"transitions": [], "current": None}
+
+    def set_transition(self, transition_name, duration_ms=None):
+        with self.lock:
+            if not self.connected or not self.client:
+                return {"success": False, "error": "Not connected"}
+            try:
+                if transition_name:
+                    self.client.set_current_scene_transition(transition_name)
+                if duration_ms:
+                    self.client.set_current_scene_transition_duration(int(duration_ms))
+                return {"success": True}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+
+    def execute_obs_event(self, item):
+        action = item.get("obs_action")
+        scene = item.get("obs_scene")
+
+        if action == "switch_scene":
+            transition = item.get("obs_transition")
+            duration = item.get("obs_transition_duration")
+            if transition or duration:
+                self.set_transition(transition, duration)
+            if scene:
+                self.set_current_scene(scene)
             return
-        visible = obs_action == "show"
-        self.set_source_visibility(obs_scene, obs_source, visible)
+
+        if action in ("show", "hide"):
+            self.set_source_visibility(scene, item.get("obs_source"), action == "show")

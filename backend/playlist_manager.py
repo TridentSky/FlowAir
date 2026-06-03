@@ -194,7 +194,8 @@ class PlaylistManager:
         self.recalculate_start_times()
         return item
 
-    def insert_obs_event(self, insert_index, obs_scene, obs_source, obs_action):
+    def insert_obs_event(self, insert_index, obs_scene, obs_source, obs_action,
+                         obs_transition="", obs_transition_duration=0):
         item = {
             "id": self.next_id,
             "name": "OBS EVENT",
@@ -207,7 +208,9 @@ class PlaylistManager:
             "start_time": None,
             "obs_scene": obs_scene,
             "obs_source": obs_source,
-            "obs_action": obs_action
+            "obs_action": obs_action,
+            "obs_transition": obs_transition,
+            "obs_transition_duration": obs_transition_duration
         }
 
         self.next_id += 1
@@ -221,6 +224,18 @@ class PlaylistManager:
             self._calculate_absolute_schedule()
         self.recalculate_start_times()
         return item
+
+    def update_obs_event(self, item_id, obs_scene, obs_source, obs_action,
+                        obs_transition="", obs_transition_duration=0):
+        for item in self.playlist:
+            if item["id"] == item_id and item["type"] == "obs":
+                item["obs_scene"] = obs_scene
+                item["obs_source"] = obs_source
+                item["obs_action"] = obs_action
+                item["obs_transition"] = obs_transition
+                item["obs_transition_duration"] = obs_transition_duration
+                return item
+        return None
 
     def update_note(self, item_id, note):
         for item in self.playlist:

@@ -88,11 +88,7 @@ playlist_manager.on_playback_change = handle_playback_change
 obs_controller = OBSController()
 
 def handle_obs_event(item):
-    obs_controller.execute_obs_event(
-        item.get("obs_scene"),
-        item.get("obs_source"),
-        item.get("obs_action")
-    )
+    obs_controller.execute_obs_event(item)
 
 playlist_manager.on_obs_event = handle_obs_event
 
@@ -207,8 +203,11 @@ class InsertNoteRequest(BaseModel):
 class InsertOBSEventRequest(BaseModel):
     insert_index: int
     obs_scene: str
-    obs_source: str
+    obs_source: str = ""
     obs_action: str
+    obs_transition: str = ""
+    obs_transition_duration: int = 0
+    item_id: Optional[int] = None
 
 class OBSSettingsRequest(BaseModel):
     enabled: bool
@@ -220,6 +219,13 @@ class OBSSourceActionRequest(BaseModel):
     scene_name: str
     source_name: str
     visible: bool
+
+class OBSSetSceneRequest(BaseModel):
+    scene_name: str
+
+class OBSSetTransitionRequest(BaseModel):
+    transition_name: str = ""
+    duration_ms: int = 0
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -448,9 +454,18 @@ async def update_note(request: UpdateNoteRequest):
 
 @app.post("/playlist/insert_obs_event")
 async def insert_obs_event(request: InsertOBSEventRequest):
-    item = playlist_manager.insert_obs_event(
-        request.insert_index, request.obs_scene, request.obs_source, request.obs_action
-    )
+    if request.item_id is not None:
+        item = playlist_manager.update_obs_event(
+            request.item_id, request.obs_scene, request.obs_source, request.obs_action,
+            request.obs_transition, request.obs_transition_duration
+        )
+        if not item:
+            return {"success": False, "error": "OBS event not found"}
+    else:
+        item = playlist_manager.insert_obs_event(
+            request.insert_index, request.obs_scene, request.obs_source, request.obs_action,
+            request.obs_transition, request.obs_transition_duration
+        )
     await broadcast_update({
         "type": "playlist_updated",
         "playlist": playlist_manager.get_playlist()
@@ -502,6 +517,22 @@ async def obs_set_visibility(request: OBSSourceActionRequest):
         request.scene_name, request.source_name, request.visible
     )
     return result
+
+@app.get("/obs/current_scene")
+async def obs_current_scene():
+    return {"scene": obs_controller.get_current_scene()}
+
+@app.post("/obs/set_scene")
+async def obs_set_scene(request: OBSSetSceneRequest):
+    return obs_controller.set_current_scene(request.scene_name)
+
+@app.get("/obs/transitions")
+async def obs_transitions():
+    return obs_controller.get_transitions()
+
+@app.post("/obs/set_transition")
+async def obs_set_transition(request: OBSSetTransitionRequest):
+    return obs_controller.set_transition(request.transition_name, request.duration_ms)
 
 @app.get("/player/state")
 async def get_player_state(request: Request):
