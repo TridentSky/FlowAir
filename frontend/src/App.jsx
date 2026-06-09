@@ -474,29 +474,16 @@ const App = () => {
           }
         }
       } else if (action.type === 'paste_items') {
-        for (const item of action.items) {
-          const currentPlaylist = await api.getPlaylist()
-          if (item.type === 'stop') {
-            const stops = currentPlaylist.playlist.filter(i => i.type === 'stop')
-            if (stops.length > 0) {
-              const lastStop = stops[stops.length - 1]
-              await api.removeItem(lastStop.id)
-            }
-          } else if (item.type === 'note' && item.noteId) {
-            const itemToRemove = currentPlaylist.playlist.find(i => i.id === item.noteId)
-            if (itemToRemove) {
-              await api.removeItem(itemToRemove.id)
-            }
-          } else if (item.type === 'obs' && item.obsId) {
-            const itemToRemove = currentPlaylist.playlist.find(i => i.id === item.obsId)
-            if (itemToRemove) {
-              await api.removeItem(itemToRemove.id)
-            }
-          } else if (item.location) {
-            const itemToRemove = currentPlaylist.playlist.find(i => i.location === item.location)
-            if (itemToRemove) {
-              await api.removeItem(itemToRemove.id)
-            }
+        const currentPlaylist = await api.getPlaylist()
+        const playingId = currentItem ? currentItem.id : null
+        for (const entry of action.items) {
+          const id = entry.id
+          if (id == null || id === playingId) {
+            continue
+          }
+          const exists = currentPlaylist.playlist.find(i => i.id === id)
+          if (exists) {
+            await api.removeItem(id)
           }
         }
       } else if (action.type === 'reorder') {
@@ -607,20 +594,20 @@ const App = () => {
         const currentInsertIndex = insertIndex + i
 
         if (item.type === 'stop') {
-          await api.insertStopEvent(currentInsertIndex)
-          pastedItems.push({ type: 'stop' })
+          const result = await api.insertStopEvent(currentInsertIndex)
+          if (result && result.item) pastedItems.push({ id: result.item.id })
         } else if (item.type === 'note') {
           const result = await api.insertNote(currentInsertIndex, item.note || 'Note')
-          pastedItems.push({ type: 'note', noteId: result.item_id })
+          if (result && result.item_id != null) pastedItems.push({ id: result.item_id })
         } else if (item.type === 'obs') {
           const result = await api.insertOBSEvent(currentInsertIndex, item.obs_scene, item.obs_source, item.obs_action, item.obs_transition || '', item.obs_transition_duration || 0)
-          pastedItems.push({ type: 'obs', obsId: result.item_id })
+          if (result && result.item_id != null) pastedItems.push({ id: result.item_id })
         } else if (item.location) {
-          await api.addItem(item.location)
+          const result = await api.addItem(item.location)
           const currentPlaylist = await api.getPlaylist()
           const newItemIndex = currentPlaylist.playlist.length - 1
           await api.reorderItems(newItemIndex, currentInsertIndex)
-          pastedItems.push({ location: item.location })
+          if (result && result.item) pastedItems.push({ id: result.item.id })
         }
       }
 
@@ -1091,7 +1078,7 @@ const App = () => {
       setSelectedItems(selectedItems.filter(i => i.id !== itemId))
 
       if (itemToDelete) {
-        saveUndoState({
+        pushAction({
           type: 'delete_items',
           items: [itemToDelete],
           originalIndices: [itemIndex]
