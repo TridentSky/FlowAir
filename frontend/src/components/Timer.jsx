@@ -1,6 +1,8 @@
-import React from 'react'
+import React, { useState, useRef } from 'react'
 
 const Timer = ({ currentItem, isPlaying, serverElapsed = 0, editMode = false, onToggleEditMode, onSeek, volume = 100, onVolumeChange }) => {
+  const [dragPct, setDragPct] = useState(null)
+  const barRef = useRef(null)
   const currentTime = Math.floor(serverElapsed)
 
   const formatTime = (seconds) => {
@@ -20,15 +22,32 @@ const Timer = ({ currentItem, isPlaying, serverElapsed = 0, editMode = false, on
 
   const totalTime = currentItem ? parseDuration(currentItem.duration_formatted || currentItem.duration) : 0
   const remaining = Math.max(0, totalTime - currentTime)
-  const progress = totalTime > 0 ? (currentTime / totalTime) * 100 : 0
+  const baseProgress = totalTime > 0 ? (currentTime / totalTime) * 100 : 0
   const isVideo = currentItem && currentItem.type === 'video' && totalTime > 0
   const canScrub = editMode && isVideo
+  const progress = dragPct !== null ? dragPct * 100 : baseProgress
 
-  const handleScrub = (e) => {
+  const pctFromClientX = (clientX) => {
+    const el = barRef.current
+    if (!el) return 0
+    const rect = el.getBoundingClientRect()
+    return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
+  }
+
+  const startScrub = (e) => {
     if (!canScrub) return
-    const rect = e.currentTarget.getBoundingClientRect()
-    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
-    if (onSeek) onSeek(ratio * totalTime)
+    e.preventDefault()
+    setDragPct(pctFromClientX(e.clientX))
+    const onMove = (ev) => setDragPct(pctFromClientX(ev.clientX))
+    const onUp = (ev) => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      const pct = pctFromClientX(ev.clientX)
+      setDragPct(null)
+      if (onSeek) onSeek(pct * totalTime)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
   }
 
   return (
@@ -46,11 +65,12 @@ const Timer = ({ currentItem, isPlaying, serverElapsed = 0, editMode = false, on
       </div>
 
       <div
+        ref={barRef}
         style={{ ...styles.progressBar, ...(canScrub ? styles.progressBarScrub : {}) }}
-        onClick={handleScrub}
-        title={canScrub ? 'Click to seek — this also shifts the next start times' : ''}
+        onMouseDown={startScrub}
+        title={canScrub ? 'Drag or click to seek — this also shifts the next start times' : ''}
       >
-        <div style={{ ...styles.progressFill, width: `${Math.min(100, progress)}%` }} />
+        <div style={{ ...styles.progressFill, width: `${Math.min(100, progress)}%`, ...(dragPct !== null ? { transition: 'none' } : {}) }} />
         {canScrub && <div style={{ ...styles.scrubThumb, left: `${Math.min(100, progress)}%` }} />}
       </div>
 
