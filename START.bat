@@ -127,17 +127,24 @@ echo.
 
 cd /d "%PROJECT_DIR%frontend"
 
-if not exist "node_modules" (
+set "NPM_OK=1"
+if not exist "node_modules\electron\dist\electron.exe" set "NPM_OK=0"
+if not exist "node_modules\.bin\vite.cmd" set "NPM_OK=0"
+if not exist "node_modules\@esbuild\win32-x64\esbuild.exe" set "NPM_OK=0"
+
+if "!NPM_OK!"=="0" (
     echo [SETUP] Installing frontend dependencies (this may take a few minutes^)...
-    call npm install
+    call npm install --no-audit --no-fund --cache "%TEMP%\flowair-npm-cache"
     if !errorlevel! neq 0 (
         echo [ERROR] Failed to install Node.js dependencies
         echo.
-        echo Retrying with clean cache...
-        call npm cache clean --force
-        call npm install
+        echo Retrying with a clean local cache...
+        rmdir /s /q "%TEMP%\flowair-npm-cache" 2>nul
+        call npm install --no-audit --no-fund --cache "%TEMP%\flowair-npm-cache"
         if !errorlevel! neq 0 (
-            echo [ERROR] Installation failed. Please check your internet connection.
+            echo [ERROR] Installation failed.
+            echo [INFO] If this folder is synced by Syncthing/Dropbox or scanned by antivirus,
+            echo [INFO] pause syncing for node_modules and retry ^(see .stignore^).
             pause
             exit /b 1
         )
@@ -145,16 +152,6 @@ if not exist "node_modules" (
     echo [OK] Node.js dependencies installed
 ) else (
     echo [OK] Node.js dependencies already installed
-)
-
-if not exist "node_modules\electron" (
-    echo [WARNING] Electron not found, reinstalling...
-    call npm install electron --save-dev
-)
-
-if not exist "node_modules\vite" (
-    echo [WARNING] Vite not found, reinstalling...
-    call npm install vite --save-dev
 )
 
 echo.

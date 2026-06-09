@@ -23,6 +23,9 @@ backup.json
 logs/
 
 
+# ===== Sync tooling (local) =====
+.stignore
+
 # ===== Editor / OS =====
 .vscode/
 .idea/
