@@ -1,17 +1,25 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Request, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, HTMLResponse
+import os
+import sys
+
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w")
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel
 from typing import List, Optional
 from contextlib import asynccontextmanager
+from concurrent.futures import ThreadPoolExecutor
 import uvicorn
 import asyncio
 from datetime import datetime
-import os
 from pathlib import Path
 import logging
 import warnings
-import sys
+import threading
+import time
 import psutil
 import socket
 
@@ -67,13 +75,55 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="FlowAir Broadcast API", lifespan=lifespan)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "::ffff:127.0.0.1"}
+TRUSTED_ORIGINS = {"http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:8000", "http://127.0.0.1:8000"}
+SAFE_METHODS = {"GET", "HEAD"}
+CLIENT_HEADER = b"x-flowair-client"
+
+def is_remote_player_path(path):
+    return path in ("/player", "/player/state") or path.startswith("/stream/") or path.startswith("/image/")
+
+class AccessControlMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+
+        client = scope.get("client")
+        client_host = client[0] if client else ""
+        path = scope.get("path", "")
+
+        if client_host not in LOCAL_HOSTS:
+            streaming = output_settings.get("networkStreamingEnabled", False)
+            if scope["type"] == "websocket":
+                allowed = streaming and path == "/ws"
+            else:
+                allowed = streaming and scope.get("method") in SAFE_METHODS and is_remote_player_path(path)
+            if not allowed:
+                await self._reject(scope, receive, send)
+                return
+
+        if scope["type"] == "http" and scope.get("method") not in SAFE_METHODS:
+            headers = dict(scope.get("headers") or [])
+            origin = headers.get(b"origin", b"").decode("latin-1")
+            if origin and origin not in TRUSTED_ORIGINS and CLIENT_HEADER not in headers:
+                await self._reject(scope, receive, send)
+                return
+
+        await self.app(scope, receive, send)
+
+    async def _reject(self, scope, receive, send):
+        if scope["type"] == "websocket":
+            await receive()
+            await send({"type": "websocket.close", "code": 1008})
+            return
+        response = JSONResponse({"detail": "Access denied"}, status_code=403)
+        await response(scope, receive, send)
+
+app.add_middleware(AccessControlMiddleware)
 
 playlist_manager = PlaylistManager()
 active_connections: List[WebSocket] = []
@@ -86,9 +136,13 @@ def handle_playback_change(data):
 playlist_manager.on_playback_change = handle_playback_change
 
 obs_controller = OBSController()
+obs_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="obs-events")
 
 def handle_obs_event(item):
-    obs_controller.execute_obs_event(item)
+    try:
+        obs_executor.submit(obs_controller.execute_obs_event, dict(item))
+    except RuntimeError:
+        pass
 
 playlist_manager.on_obs_event = handle_obs_event
 
@@ -110,72 +164,81 @@ obs_settings = {
 }
 
 async def update_playlist_times():
-    global last_broadcast_state
     check_counter = 0
 
     while True:
         await asyncio.sleep(1)
-
-        if not (playlist_manager.is_playing or playlist_manager.is_paused):
+        try:
+            check_counter = await refresh_playlist_state(check_counter)
+        except Exception:
             await asyncio.sleep(0.5)
-            continue
 
-        playlist_manager.recalculate_start_times()
+async def refresh_playlist_state(check_counter):
+    global last_broadcast_state
 
-        elapsed = 0
-        if playlist_manager.is_playing and playlist_manager.current_video_start_time:
-            elapsed = (datetime.now() - playlist_manager.current_video_start_time).total_seconds() - playlist_manager.total_pause_time
-        elif playlist_manager.is_paused and playlist_manager.current_video_start_time and playlist_manager.pause_time:
-            elapsed = (playlist_manager.pause_time - playlist_manager.current_video_start_time).total_seconds() - playlist_manager.total_pause_time
+    if not (playlist_manager.is_playing or playlist_manager.is_paused):
+        await asyncio.sleep(0.5)
+        return check_counter
 
-        current_state = {
-            "current_index": playlist_manager.current_index,
-            "is_playing": playlist_manager.is_playing,
-            "elapsed": int(elapsed)
-        }
+    playlist_manager.recalculate_start_times()
 
-        if (current_state["current_index"] != last_broadcast_state["current_index"] or
-            current_state["is_playing"] != last_broadcast_state["is_playing"] or
-            abs(current_state["elapsed"] - last_broadcast_state["elapsed"]) >= 1 or
-            playlist_manager.validation_completed):
+    elapsed = 0
+    if playlist_manager.is_playing and playlist_manager.current_video_start_time:
+        elapsed = (datetime.now() - playlist_manager.current_video_start_time).total_seconds() - playlist_manager.total_pause_time
+    elif playlist_manager.is_paused and playlist_manager.current_video_start_time and playlist_manager.pause_time:
+        elapsed = (playlist_manager.pause_time - playlist_manager.current_video_start_time).total_seconds() - playlist_manager.total_pause_time
 
-            await broadcast_update({
-                "type": "playlist_updated",
-                "playlist": playlist_manager.get_playlist(),
-                "elapsed": max(0, elapsed),
-                "current_item": playlist_manager.get_current_item(),
-                "is_playing": playlist_manager.is_playing
-            })
+    current_state = {
+        "current_index": playlist_manager.current_index,
+        "is_playing": playlist_manager.is_playing,
+        "elapsed": int(elapsed)
+    }
 
-            last_broadcast_state = current_state
-            playlist_manager.validation_completed = False
+    if (current_state["current_index"] != last_broadcast_state["current_index"] or
+        current_state["is_playing"] != last_broadcast_state["is_playing"] or
+        abs(current_state["elapsed"] - last_broadcast_state["elapsed"]) >= 1 or
+        playlist_manager.validation_completed):
 
-        check_counter += 1
-        if check_counter >= 5:
-            check_counter = 0
-            missing_ids = playlist_manager.check_missing_files()
-            current_time = datetime.now()
+        await broadcast_update({
+            "type": "playlist_updated",
+            "playlist": playlist_manager.get_playlist(),
+            "elapsed": max(0, elapsed),
+            "current_item": playlist_manager.get_current_item(),
+            "is_playing": playlist_manager.is_playing
+        })
 
-            for item_id in missing_ids:
-                if item_id not in missing_file_timers:
-                    missing_file_timers[item_id] = current_time
-                    playlist_manager.mark_as_corrupted(item_id)
-                    await broadcast_update({
-                        "type": "file_missing",
-                        "item_id": item_id,
-                        "message": "File does not exist or was deleted",
-                        "playlist": playlist_manager.get_playlist()
-                    })
+        last_broadcast_state = current_state
+        playlist_manager.validation_completed = False
 
-            existing_ids = [item["id"] for item in playlist_manager.get_playlist()]
-            for timer_id in list(missing_file_timers.keys()):
-                if timer_id not in missing_ids or timer_id not in existing_ids:
-                    if timer_id in missing_file_timers:
-                        del missing_file_timers[timer_id]
+    check_counter += 1
+    if check_counter >= 5:
+        check_counter = 0
+        missing_ids = await asyncio.to_thread(playlist_manager.check_missing_files)
+        current_time = datetime.now()
+
+        for item_id in missing_ids:
+            if item_id not in missing_file_timers:
+                missing_file_timers[item_id] = current_time
+                playlist_manager.mark_as_corrupted(item_id)
+                await broadcast_update({
+                    "type": "file_missing",
+                    "item_id": item_id,
+                    "message": "File does not exist or was deleted",
+                    "playlist": playlist_manager.get_playlist()
+                })
+
+        existing_ids = [item["id"] for item in playlist_manager.get_playlist()]
+        for timer_id in list(missing_file_timers.keys()):
+            if timer_id not in missing_ids or timer_id not in existing_ids:
+                if timer_id in missing_file_timers:
+                    del missing_file_timers[timer_id]
+
+    return check_counter
 
 class AddItemRequest(BaseModel):
     filepath: str
     insertIndex: Optional[int] = None
+    loop: bool = False
 
 class RemoveItemRequest(BaseModel):
     item_id: int
@@ -184,14 +247,12 @@ class ReorderRequest(BaseModel):
     from_index: int
     to_index: int
 
+class MoveItemsRequest(BaseModel):
+    item_ids: List[int]
+    position: int
+
 class CueRequest(BaseModel):
     item_id: int
-
-class SavePlaylistRequest(BaseModel):
-    filepath: str
-
-class LoadPlaylistRequest(BaseModel):
-    filepath: str
 
 class InsertStopEventRequest(BaseModel):
     insert_index: int
@@ -260,7 +321,12 @@ async def broadcast_update(message: dict):
 
 @app.get("/")
 async def root():
-    return {"message": "FlowAir Broadcast API", "version": "1.0.0"}
+    return {
+        "message": "FlowAir Broadcast API",
+        "version": os.environ.get("FLOWAIR_VERSION", "dev"),
+        "instance": os.environ.get("FLOWAIR_INSTANCE", ""),
+        "pid": os.getpid()
+    }
 
 @app.get("/playlist")
 async def get_playlist():
@@ -273,7 +339,7 @@ async def get_playlist():
 
 @app.post("/playlist/add")
 async def add_item(request: AddItemRequest):
-    item = playlist_manager.add_item(request.filepath, request.insertIndex)
+    item = playlist_manager.add_item(request.filepath, request.insertIndex, request.loop)
     await broadcast_update({
         "type": "playlist_updated",
         "playlist": playlist_manager.get_playlist()
@@ -294,7 +360,8 @@ async def check_file_exists(data: dict):
     filepath = data.get("filepath")
     if not filepath:
         return {"exists": False}
-    return {"exists": os.path.exists(filepath)}
+    exists = await asyncio.to_thread(os.path.exists, filepath)
+    return {"exists": exists}
 
 @app.post("/playlist/reorder")
 async def reorder_items(request: ReorderRequest):
@@ -304,6 +371,15 @@ async def reorder_items(request: ReorderRequest):
         "playlist": playlist_manager.get_playlist()
     })
     return {"success": True}
+
+@app.post("/playlist/move")
+async def move_items(request: MoveItemsRequest):
+    success = playlist_manager.move_items(request.item_ids, request.position)
+    await broadcast_update({
+        "type": "playlist_updated",
+        "playlist": playlist_manager.get_playlist()
+    })
+    return {"success": success}
 
 @app.post("/player/play")
 async def play():
@@ -392,19 +468,6 @@ async def toggle_loop(item_id: int):
             return {"success": True, "loop": item["loop"]}
     return {"success": False, "error": "Item not found"}
 
-def is_localhost(client_ip: str) -> bool:
-    localhost_ips = ['127.0.0.1', '::1', 'localhost']
-    return client_ip in localhost_ips
-
-def check_network_access(request: Request):
-    if not output_settings.get('networkStreamingEnabled', False):
-        client_ip = request.client.host
-        if not is_localhost(client_ip):
-            raise HTTPException(
-                status_code=403,
-                detail="Network streaming is disabled. Access only allowed from localhost."
-            )
-
 @app.get("/output_settings")
 async def get_output_settings():
     return output_settings
@@ -437,21 +500,6 @@ async def get_network_info():
         "port": port,
         "player_url": f"http://{local_ip}:{port}/player"
     }
-
-@app.post("/playlist/save")
-async def save_playlist(request: SavePlaylistRequest):
-    playlist_manager.save_playlist(request.filepath)
-    return {"success": True}
-
-@app.post("/playlist/load")
-async def load_playlist(request: LoadPlaylistRequest):
-    success = playlist_manager.load_playlist(request.filepath)
-    if success:
-        await broadcast_update({
-            "type": "playlist_loaded",
-            "playlist": playlist_manager.get_playlist()
-        })
-    return {"success": success}
 
 @app.post("/playlist/insert_stop")
 async def insert_stop_event(request: InsertStopEventRequest):
@@ -512,65 +560,57 @@ async def get_obs_settings():
 @app.post("/obs/settings")
 async def update_obs_settings(request: OBSSettingsRequest):
     global obs_settings
-    obs_settings = request.dict()
+    obs_settings = request.model_dump()
     obs_controller.settings = obs_settings
     return {"success": True}
 
 @app.post("/obs/connect")
-async def obs_connect():
+def obs_connect():
     obs_controller.settings = obs_settings
-    result = obs_controller.connect()
-    return result
+    return obs_controller.connect()
 
 @app.post("/obs/disconnect")
-async def obs_disconnect():
-    result = obs_controller.disconnect()
-    return result
+def obs_disconnect():
+    return obs_controller.disconnect()
 
 @app.get("/obs/status")
-async def obs_status():
+def obs_status():
     if obs_controller.connected:
-        alive = obs_controller.is_alive()
-        return {"connected": alive}
+        return {"connected": obs_controller.is_alive()}
     return {"connected": False}
 
 @app.get("/obs/scenes")
-async def obs_scenes():
-    scenes = obs_controller.get_scenes()
-    return {"scenes": scenes}
+def obs_scenes():
+    return {"scenes": obs_controller.get_scenes()}
 
 @app.get("/obs/scenes/{scene_name}/sources")
-async def obs_scene_sources(scene_name: str):
-    sources = obs_controller.get_scene_sources(scene_name)
-    return {"sources": sources}
+def obs_scene_sources(scene_name: str):
+    return {"sources": obs_controller.get_scene_sources(scene_name)}
 
 @app.post("/obs/source/visibility")
-async def obs_set_visibility(request: OBSSourceActionRequest):
-    result = obs_controller.set_source_visibility(
+def obs_set_visibility(request: OBSSourceActionRequest):
+    return obs_controller.set_source_visibility(
         request.scene_name, request.source_name, request.visible
     )
-    return result
 
 @app.get("/obs/current_scene")
-async def obs_current_scene():
+def obs_current_scene():
     return {"scene": obs_controller.get_current_scene()}
 
 @app.post("/obs/set_scene")
-async def obs_set_scene(request: OBSSetSceneRequest):
+def obs_set_scene(request: OBSSetSceneRequest):
     return obs_controller.set_current_scene(request.scene_name)
 
 @app.get("/obs/transitions")
-async def obs_transitions():
+def obs_transitions():
     return obs_controller.get_transitions()
 
 @app.post("/obs/set_transition")
-async def obs_set_transition(request: OBSSetTransitionRequest):
+def obs_set_transition(request: OBSSetTransitionRequest):
     return obs_controller.set_transition(request.transition_name, request.duration_ms)
 
 @app.get("/player/state")
-async def get_player_state(request: Request):
-    check_network_access(request)
-    from datetime import datetime
+async def get_player_state():
     current_item = playlist_manager.get_current_item()
     elapsed = 0
 
@@ -589,21 +629,18 @@ async def get_player_state(request: Request):
     }
 
 @app.get("/player")
-async def player_page(request: Request):
-    check_network_access(request)
+async def player_page():
     scaling_mode_map = {
         "stretch": "fill",
         "fit": "contain",
         "fill": "cover"
     }
-    object_fit = scaling_mode_map.get(output_settings["scalingMode"], "fill")
+    object_fit = scaling_mode_map.get(output_settings.get("scalingMode"), "fill")
 
-    # Aspect ratio CSS logic
     aspect_ratio = output_settings.get("aspectRatio", "16:9")
     container_css = ""
 
     if aspect_ratio == "9:16":
-        # Vertical video mode
         container_css = """
             #container {
                 position: absolute;
@@ -616,7 +653,6 @@ async def player_page(request: Request):
             }
         """
     elif aspect_ratio == "4:3":
-        # Standard 4:3 mode
         container_css = """
             #container {
                 position: absolute;
@@ -629,7 +665,6 @@ async def player_page(request: Request):
             }
         """
     elif aspect_ratio == "1:1":
-        # Square mode
         container_css = """
             #container {
                 position: absolute;
@@ -642,7 +677,6 @@ async def player_page(request: Request):
             }
         """
     else:
-        # Default 16:9 widescreen
         container_css = """
             #container {
                 width: 100vw;
@@ -1023,48 +1057,84 @@ async def player_page(request: Request):
         }
     )
 
-@app.get("/stream/{item_id}")
-async def stream_video(item_id: int, request: Request):
-    check_network_access(request)
-    item = None
+STREAM_CHUNK_SIZE = 1048576
+RANGE_CHUNK_SIZE = 4194304
+
+def find_playlist_item(item_id):
     for playlist_item in playlist_manager.playlist:
         if playlist_item['id'] == item_id:
-            item = playlist_item
-            break
+            return playlist_item
+    return None
 
-    if not item:
-        return {"error": "Item not found"}
+def get_file_size(filepath):
+    try:
+        return os.path.getsize(filepath) if os.path.isfile(filepath) else None
+    except OSError:
+        return None
+
+def parse_byte_range(range_header, file_size):
+    try:
+        unit, _, ranges = range_header.partition("=")
+        if unit.strip().lower() != "bytes" or file_size <= 0:
+            return None
+        first_range = ranges.split(",")[0].strip()
+        start_text, _, end_text = first_range.partition("-")
+        if start_text.strip() == "":
+            suffix_length = int(end_text)
+            if suffix_length <= 0:
+                return None
+            start = max(0, file_size - suffix_length)
+            end = file_size - 1
+        else:
+            start = int(start_text)
+            end = int(end_text) if end_text.strip() else file_size - 1
+        end = min(end, file_size - 1)
+        if start < 0 or start > end:
+            return None
+        return start, end
+    except ValueError:
+        return None
+
+def read_file_chunks(filepath, start=0, length=None, chunk_size=STREAM_CHUNK_SIZE):
+    try:
+        with open(filepath, mode="rb") as file_like:
+            file_like.seek(start)
+            remaining = length
+            while remaining is None or remaining > 0:
+                size = chunk_size if remaining is None else min(chunk_size, remaining)
+                chunk = file_like.read(size)
+                if not chunk:
+                    break
+                if remaining is not None:
+                    remaining -= len(chunk)
+                yield chunk
+    except OSError:
+        pass
+
+@app.get("/stream/{item_id}")
+async def stream_video(item_id: int, request: Request):
+    item = find_playlist_item(item_id)
+    if not item or not item.get('location'):
+        return JSONResponse({"error": "Item not found"}, status_code=404)
 
     filepath = item['location']
+    file_size = await asyncio.to_thread(get_file_size, filepath)
+    if file_size is None:
+        return JSONResponse({"error": "File not found"}, status_code=404)
 
-    if not os.path.exists(filepath):
-        return {"error": "File not found"}
+    ext = Path(filepath).suffix.lower()
+    media_type = 'video/mp4'
+    if ext in ['.avi', '.mkv', '.webm']:
+        media_type = f'video/{ext[1:]}'
 
-    file_size = os.path.getsize(filepath)
     range_header = request.headers.get('range')
-
     if range_header:
-        byte_range = range_header.strip().split('=')[1]
-        start, end = byte_range.split('-')
-        start = int(start)
-        end = int(end) if end else file_size - 1
+        byte_range = parse_byte_range(range_header, file_size)
+        if byte_range is None:
+            return Response(status_code=416, headers={'Content-Range': f'bytes */{file_size}'})
 
+        start, end = byte_range
         chunk_size = end - start + 1
-
-        def iterfile():
-            try:
-                with open(filepath, mode="rb") as file_like:
-                    file_like.seek(start)
-                    bytes_read = 0
-                    while bytes_read < chunk_size:
-                        chunk = file_like.read(min(4194304, chunk_size - bytes_read))
-                        if not chunk:
-                            break
-                        bytes_read += len(chunk)
-                        yield chunk
-            except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
-                pass
-
         headers = {
             'Content-Range': f'bytes {start}-{end}/{file_size}',
             'Accept-Ranges': 'bytes',
@@ -1073,49 +1143,24 @@ async def stream_video(item_id: int, request: Request):
             'Pragma': 'no-cache',
             'Expires': '0',
         }
+        return StreamingResponse(read_file_chunks(filepath, start, chunk_size, RANGE_CHUNK_SIZE), status_code=206, headers=headers, media_type=media_type)
 
-        ext = Path(filepath).suffix.lower()
-        media_type = 'video/mp4'
-        if ext in ['.avi', '.mkv', '.webm']:
-            media_type = f'video/{ext[1:]}'
-
-        return StreamingResponse(iterfile(), status_code=206, headers=headers, media_type=media_type)
-    else:
-        def iterfile():
-            try:
-                with open(filepath, mode="rb") as file_like:
-                    yield from file_like
-            except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
-                pass
-
-        ext = Path(filepath).suffix.lower()
-        media_type = 'video/mp4'
-        if ext in ['.avi', '.mkv', '.webm']:
-            media_type = f'video/{ext[1:]}'
-
-        headers = {
-            'Accept-Ranges': 'bytes',
-            'Content-Length': str(file_size)
-        }
-
-        return StreamingResponse(iterfile(), headers=headers, media_type=media_type)
+    headers = {
+        'Accept-Ranges': 'bytes',
+        'Content-Length': str(file_size)
+    }
+    return StreamingResponse(read_file_chunks(filepath, 0, file_size), headers=headers, media_type=media_type)
 
 @app.get("/image/{item_id}")
-async def serve_image(item_id: int, request: Request):
-    check_network_access(request)
-    item = None
-    for playlist_item in playlist_manager.playlist:
-        if playlist_item['id'] == item_id:
-            item = playlist_item
-            break
-
-    if not item or item['type'] != 'image':
-        return {"error": "Image not found"}
+async def serve_image(item_id: int):
+    item = find_playlist_item(item_id)
+    if not item or item['type'] != 'image' or not item.get('location'):
+        return JSONResponse({"error": "Image not found"}, status_code=404)
 
     filepath = item['location']
-
-    if not os.path.exists(filepath):
-        return {"error": "File not found"}
+    file_size = await asyncio.to_thread(get_file_size, filepath)
+    if file_size is None:
+        return JSONResponse({"error": "File not found"}, status_code=404)
 
     ext = Path(filepath).suffix.lower()
     media_type = 'image/jpeg'
@@ -1128,22 +1173,37 @@ async def serve_image(item_id: int, request: Request):
     elif ext == '.webp':
         media_type = 'image/webp'
 
-    def iterfile():
-        try:
-            with open(filepath, mode="rb") as file_like:
-                yield from file_like
-        except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
-            pass
+    return StreamingResponse(read_file_chunks(filepath, 0, file_size), media_type=media_type)
 
-    return StreamingResponse(iterfile(), media_type=media_type)
+def watch_parent_process():
+    parent_pid = os.environ.get("FLOWAIR_PARENT_PID")
+    if not parent_pid:
+        return
+    try:
+        parent = psutil.Process(int(parent_pid))
+    except (psutil.Error, ValueError):
+        os._exit(0)
+
+    def monitor():
+        while True:
+            time.sleep(2)
+            try:
+                if not parent.is_running():
+                    os._exit(0)
+            except psutil.Error:
+                os._exit(0)
+
+    threading.Thread(target=monitor, daemon=True).start()
 
 
 if __name__ == "__main__":
+    watch_parent_process()
     config = Config()
     uvicorn.run(
         app,
         host=config.HOST,
         port=config.PORT,
         log_level="critical",
+        log_config=None,
         access_log=False
     )
