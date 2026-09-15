@@ -1,4 +1,3 @@
-import json
 import os
 import gc
 import time
@@ -34,6 +33,7 @@ class PlaylistManager:
         self.validation_cache = {}
         self.validation_cache_max = 2000
         self.active_validations = set()
+        self.validation_condition = threading.Condition()
         self.validation_completed = False
         self.validation_semaphore = threading.Semaphore(5)
         self.on_playback_change = None
@@ -43,7 +43,7 @@ class PlaylistManager:
         self._start_cleanup_thread()
         self._start_force_timing_thread()
 
-    def add_item(self, filepath, insert_index=None):
+    def add_item(self, filepath, insert_index=None, loop=False):
         was_empty = len(self.playlist) == 0
 
         item = {
@@ -56,18 +56,14 @@ class PlaylistManager:
             "status": "validating",
             "resolution": None,
             "start_time": None,
-            "loop": False,
+            "loop": bool(loop),
             "file_size": None,
             "format": None,
             "bitrate": None
         }
 
         self.next_id += 1
-
-        if insert_index is not None and 0 <= insert_index <= len(self.playlist):
-            self.playlist.insert(insert_index, item)
-        else:
-            self.playlist.append(item)
+        self._insert_item(item, insert_index)
 
         validation_thread = threading.Thread(target=self._validate_item_async, args=(item,), daemon=True)
         validation_thread.start()
@@ -85,64 +81,85 @@ class PlaylistManager:
         self.recalculate_start_times()
         return item
 
+    def _insert_item(self, item, insert_index):
+        if insert_index is None or insert_index < 0 or insert_index > len(self.playlist):
+            insert_index = len(self.playlist)
+
+        if 0 <= self.current_index and insert_index <= self.current_index:
+            if self.is_playing:
+                insert_index = self.current_index + 1
+            else:
+                self.playlist.insert(insert_index, item)
+                self.current_index += 1
+                return
+
+        self.playlist.insert(insert_index, item)
+
     def _validate_item_async(self, item):
         filepath = item["location"]
 
-        with self.validation_semaphore:
-            try:
-                if filepath in self.active_validations:
-                    return
+        with self.validation_condition:
+            while filepath in self.active_validations:
+                self.validation_condition.wait(timeout=1.0)
+            self.active_validations.add(filepath)
 
-                self.active_validations.add(filepath)
+        try:
+            with self.validation_semaphore:
+                self._apply_validation(item, filepath)
+        finally:
+            with self.validation_condition:
+                self.active_validations.discard(filepath)
+                self.validation_condition.notify_all()
 
-                if filepath in self.validation_cache and os.path.exists(filepath):
-                    cached = self.validation_cache[filepath]
-                    item["type"] = cached["type"]
-                    item["duration"] = cached["duration"]
-                    item["duration_formatted"] = cached["duration_formatted"]
-                    item["status"] = cached["status"]
-                    item["resolution"] = cached["resolution"]
-                    item["file_size"] = cached["file_size"]
-                    item["format"] = cached["format"]
-                    item["bitrate"] = cached["bitrate"]
-                else:
-                    validation = self.validator.validate_file(filepath)
+    def _apply_validation(self, item, filepath):
+        try:
+            if filepath in self.validation_cache and os.path.exists(filepath):
+                cached = self.validation_cache[filepath]
+                item["type"] = cached["type"]
+                item["duration"] = cached["duration"]
+                item["duration_formatted"] = cached["duration_formatted"]
+                item["status"] = cached["status"]
+                item["resolution"] = cached["resolution"]
+                item["file_size"] = cached["file_size"]
+                item["format"] = cached["format"]
+                item["bitrate"] = cached["bitrate"]
+            else:
+                validation = self.validator.validate_file(filepath)
 
-                    item["type"] = validation["type"]
-                    item["duration"] = validation["duration"]
-                    item["duration_formatted"] = self.validator.get_video_duration_formatted(validation["duration"]) if validation["type"] == "video" else "STATIC"
-                    item["status"] = "normal" if validation["valid"] else "corrupted"
-                    item["resolution"] = validation["resolution"]
-                    item["file_size"] = self.validator.get_file_size(filepath)
-                    item["format"] = self.validator.get_codec_info(filepath)
-                    item["bitrate"] = self.validator.get_bitrate(filepath) if validation["type"] == "video" else None
+                item["type"] = validation["type"]
+                item["duration"] = validation["duration"]
+                item["duration_formatted"] = self.validator.get_video_duration_formatted(validation["duration"]) if validation["type"] == "video" else "STATIC"
+                item["status"] = "normal" if validation["valid"] else "corrupted"
+                item["resolution"] = validation["resolution"]
+                item["file_size"] = self.validator.get_file_size(filepath)
+                item["format"] = self.validator.get_codec_info(filepath)
+                item["bitrate"] = self.validator.get_bitrate(filepath) if validation["type"] == "video" else None
 
-                    self.validation_cache[filepath] = {
-                        "type": item["type"],
-                        "duration": item["duration"],
-                        "duration_formatted": item["duration_formatted"],
-                        "status": item["status"],
-                        "resolution": item["resolution"],
-                        "file_size": item["file_size"],
-                        "format": item["format"],
-                        "bitrate": item["bitrate"]
-                    }
+                self.validation_cache[filepath] = {
+                    "type": item["type"],
+                    "duration": item["duration"],
+                    "duration_formatted": item["duration_formatted"],
+                    "status": item["status"],
+                    "resolution": item["resolution"],
+                    "file_size": item["file_size"],
+                    "format": item["format"],
+                    "bitrate": item["bitrate"]
+                }
+        except:
+            item["status"] = "corrupted"
+            item["duration_formatted"] = "ERROR"
+            if filepath in self.validation_cache:
+                del self.validation_cache[filepath]
 
-                if self.is_playing:
-                    self.absolute_schedule = {}
-                    self._calculate_absolute_schedule()
-                self.recalculate_start_times()
+        try:
+            if self.is_playing:
+                self.absolute_schedule = {}
+                self._calculate_absolute_schedule()
+            self.recalculate_start_times()
+        except Exception:
+            pass
 
-                self.validation_completed = True
-            except:
-                item["status"] = "corrupted"
-                item["duration_formatted"] = "ERROR"
-                if filepath in self.validation_cache:
-                    del self.validation_cache[filepath]
-                self.validation_completed = True
-            finally:
-                if filepath in self.active_validations:
-                    self.active_validations.remove(filepath)
+        self.validation_completed = True
 
     def insert_stop_event(self, insert_index):
         item = {
@@ -158,10 +175,7 @@ class PlaylistManager:
         }
 
         self.next_id += 1
-        if insert_index >= len(self.playlist):
-            self.playlist.append(item)
-        else:
-            self.playlist.insert(insert_index, item)
+        self._insert_item(item, insert_index)
 
         if self.is_playing:
             self.absolute_schedule = {}
@@ -184,10 +198,7 @@ class PlaylistManager:
         }
 
         self.next_id += 1
-        if insert_index >= len(self.playlist):
-            self.playlist.append(item)
-        else:
-            self.playlist.insert(insert_index, item)
+        self._insert_item(item, insert_index)
 
         if self.is_playing:
             self.absolute_schedule = {}
@@ -215,10 +226,7 @@ class PlaylistManager:
         }
 
         self.next_id += 1
-        if insert_index >= len(self.playlist):
-            self.playlist.append(item)
-        else:
-            self.playlist.insert(insert_index, item)
+        self._insert_item(item, insert_index)
 
         if self.is_playing:
             self.absolute_schedule = {}
@@ -281,6 +289,8 @@ class PlaylistManager:
         self.recalculate_start_times()
 
     def reorder_items(self, from_index, to_index):
+        if self.current_index >= 0 and (from_index <= self.current_index or to_index <= self.current_index):
+            return
         if 0 <= from_index < len(self.playlist) and 0 <= to_index < len(self.playlist):
             item = self.playlist.pop(from_index)
             self.playlist.insert(to_index, item)
@@ -289,6 +299,23 @@ class PlaylistManager:
                 self.absolute_schedule = {}
                 self._calculate_absolute_schedule()
             self.recalculate_start_times()
+
+    def move_items(self, item_ids, position):
+        ids = set(item_ids)
+        indices = [idx for idx, item in enumerate(self.playlist) if item["id"] in ids]
+        if not indices or indices[0] <= self.current_index:
+            return False
+
+        moving = [self.playlist[idx] for idx in indices]
+        remaining = [item for item in self.playlist if item["id"] not in ids]
+        position = max(self.current_index + 1, min(int(position), len(remaining)))
+        self.playlist = remaining[:position] + moving + remaining[position:]
+
+        if self.is_playing:
+            self.absolute_schedule = {}
+            self._calculate_absolute_schedule()
+        self.recalculate_start_times()
+        return True
 
     def get_playlist(self):
         return self.playlist
@@ -455,13 +482,6 @@ class PlaylistManager:
 
                 self.recalculate_start_times()
                 break
-
-    def toggle_loop(self, item_id):
-        for item in self.playlist:
-            if item["id"] == item_id:
-                item["loop"] = not item.get("loop", False)
-                return item["loop"]
-        return False
 
     def set_output_volume(self, volume):
         try:
@@ -720,39 +740,8 @@ class PlaylistManager:
 
     def check_missing_files(self):
         missing_items = []
-        for item in self.playlist:
+        for item in list(self.playlist):
             if item["type"] in ["video", "image"] and item["location"]:
                 if not os.path.exists(item["location"]):
                     missing_items.append(item["id"])
         return missing_items
-
-    def save_playlist(self, filepath):
-        data = {
-            "playlist": self.playlist,
-            "current_index": self.current_index,
-            "saved_at": datetime.now().isoformat()
-        }
-        with open(filepath, 'w') as f:
-            json.dump(data, f, indent=2)
-
-    def load_playlist(self, filepath):
-        if not os.path.exists(filepath):
-            return False
-
-        with open(filepath, 'r') as f:
-            data = json.load(f)
-
-        self.playlist = data.get("playlist", [])
-        self.current_index = data.get("current_index", -1)
-        self.recalculate_start_times()
-
-        for item in self.playlist:
-            if item.get("location"):
-                validation = self.validator.validate_file(item["location"])
-                item["status"] = "normal" if validation["valid"] else "corrupted"
-            else:
-                item["status"] = "normal"
-            if "loop" not in item:
-                item["loop"] = False
-
-        return True

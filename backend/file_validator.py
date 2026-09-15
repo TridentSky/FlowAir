@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from config import Config
 
+CREATE_NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+
 class FileValidator:
     def __init__(self):
         self.config = Config()
@@ -78,7 +80,7 @@ class FileValidator:
                 filepath
             ]
 
-            result = subprocess.run(cmd, capture_output=True, encoding='utf-8', errors='ignore', timeout=60)
+            result = subprocess.run(cmd, capture_output=True, encoding='utf-8', errors='ignore', creationflags=CREATE_NO_WINDOW, timeout=60)
 
             if result.returncode != 0 or not result.stdout.strip():
                 return {
@@ -169,7 +171,7 @@ class FileValidator:
                 filepath
             ]
 
-            result = subprocess.run(cmd, capture_output=True, encoding='utf-8', errors='ignore', timeout=10)
+            result = subprocess.run(cmd, capture_output=True, encoding='utf-8', errors='ignore', creationflags=CREATE_NO_WINDOW, timeout=10)
 
             if result.returncode != 0 or not result.stdout.strip():
                 return {
@@ -245,7 +247,7 @@ class FileValidator:
                 '-show_streams',
                 filepath
             ]
-            result = subprocess.run(cmd, capture_output=True, encoding='utf-8', errors='ignore', timeout=10)
+            result = subprocess.run(cmd, capture_output=True, encoding='utf-8', errors='ignore', creationflags=CREATE_NO_WINDOW, timeout=10)
             if result.returncode != 0:
                 return "Unknown"
 
@@ -272,7 +274,7 @@ class FileValidator:
                 '-show_streams',
                 filepath
             ]
-            result = subprocess.run(cmd, capture_output=True, encoding='utf-8', errors='ignore', timeout=10)
+            result = subprocess.run(cmd, capture_output=True, encoding='utf-8', errors='ignore', creationflags=CREATE_NO_WINDOW, timeout=10)
             if result.returncode != 0:
                 return None
 
