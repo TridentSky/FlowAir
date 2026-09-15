@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import Playlist from './components/Playlist'
 import Preview from './components/Preview'
 import Controls from './components/Controls'
@@ -9,6 +9,38 @@ import { api } from './api'
 import packageJson from '../package.json'
 
 const APP_VERSION = packageJson.version
+const AUTOSAVE_DELAY_MS = 1500
+const IPC_CHANNELS = ['output-window-closed', 'displays-changed', 'backend-restarted', 'update-available']
+
+const getElectron = () => {
+  try {
+    return window.require('electron')
+  } catch (error) {
+    return null
+  }
+}
+
+const serializePlaylistItems = (items) => items.map(item => ({
+  type: item.type,
+  name: item.name,
+  location: item.location,
+  duration: item.duration,
+  duration_formatted: item.duration_formatted,
+  note: item.note,
+  loop: item.loop,
+  obs_scene: item.obs_scene,
+  obs_source: item.obs_source,
+  obs_action: item.obs_action,
+  obs_transition: item.obs_transition,
+  obs_transition_duration: item.obs_transition_duration
+}))
+
+const extractPlaylistItems = (data) => {
+  if (Array.isArray(data)) return data
+  if (data && Array.isArray(data.playlist)) return data.playlist
+  if (data && Array.isArray(data.items)) return data.items
+  return []
+}
 
 const App = () => {
   const [playlist, setPlaylist] = useState([])
@@ -31,6 +63,12 @@ const App = () => {
   const [serverElapsed, setServerElapsed] = useState(0)
   const [editMode, setEditMode] = useState(false)
   const [outputVolume, setOutputVolume] = useState(100)
+  const [availableUpdate, setAvailableUpdate] = useState(null)
+  const [recoverySession, setRecoverySession] = useState(null)
+  const autosaveReady = useRef(false)
+  const autosaveTimer = useRef(null)
+  const pendingAutosave = useRef(null)
+  const lastAutosave = useRef(null)
   const [timeFormat, setTimeFormat] = useState(() => {
     return localStorage.getItem('timeFormat') || '12'
   })
@@ -92,6 +130,20 @@ const App = () => {
     loadNetworkInfo()
     restoreOutputWindow()
 
+    api.updateOutputSettings(outputSettings).catch(() => {})
+    if (obsSettings.enabled) {
+      api.updateOBSSettings(obsSettings)
+        .then(() => api.obsConnect())
+        .then(result => {
+          if (result && result.success) {
+            setOBSConnected(true)
+            setOBSStatusMessage(`Connected to OBS v${result.obs_version}`)
+            addLog(`OBS connected (v${result.obs_version})`, 'info')
+          }
+        })
+        .catch(() => {})
+    }
+
     const ws = api.connectWebSocket((data) => {
       if (data.type === 'playlist_updated') {
         if (!pauseWebSocketUpdates.current) {
@@ -136,31 +188,87 @@ const App = () => {
         }
       } else if (data.type === 'file_missing') {
         addLog(`File missing: ${data.message}`, 'error')
-      } else if (data.type === 'file_removed') {
-        setPlaylist(data.playlist)
-        addLog('File auto-removed (missing from disk)', 'warning')
       }
     })
 
-    try {
-      const { ipcRenderer } = window.require('electron')
-      ipcRenderer.on('output-window-closed', () => {
+    const electron = getElectron()
+    if (electron) {
+      const { ipcRenderer } = electron
+      ipcRenderer.on('output-window-closed', (event, info) => {
         setOutputWindowActive(false)
         setOutputSettings(prev => ({ ...prev, externalOutputEnabled: false }))
-        addLog('External output closed', 'info')
+        const reason = info && info.reason
+        if (reason === 'display-missing') {
+          addLog('External output display is not connected', 'warning')
+        } else if (reason === 'display-removed') {
+          addLog('External output display was disconnected', 'warning')
+        } else {
+          addLog('External output closed', 'info')
+        }
       })
-    } catch (error) {
+      ipcRenderer.on('displays-changed', () => {
+        loadDisplays()
+      })
+      ipcRenderer.on('backend-restarted', () => {
+        loadPlaylist()
+        addLog('Playout engine restarted after an unexpected stop', 'error')
+      })
+      ipcRenderer.on('update-available', (event, update) => {
+        if (update) setAvailableUpdate(update)
+      })
+      ipcRenderer.invoke('get-available-update')
+        .then(update => {
+          if (update) setAvailableUpdate(update)
+        })
+        .catch(() => {})
+      Promise.all([ipcRenderer.invoke('read-autosave'), api.getPlaylist()])
+        .then(([saved, current]) => {
+          const items = extractPlaylistItems(saved)
+          const backendEmpty = current && Array.isArray(current.playlist) && current.playlist.length === 0
+          if (items.length > 0 && backendEmpty) {
+            setRecoverySession({ items, savedAt: saved.savedAt })
+          } else {
+            autosaveReady.current = true
+          }
+        })
+        .catch(() => {
+          autosaveReady.current = true
+        })
+    } else {
+      autosaveReady.current = true
     }
 
     return () => {
-      if (ws) ws.close()
-      try {
-        const { ipcRenderer } = window.require('electron')
-        ipcRenderer.removeAllListeners('output-window-closed')
-      } catch (error) {
+      ws.close()
+      if (electron) {
+        IPC_CHANNELS.forEach(channel => electron.ipcRenderer.removeAllListeners(channel))
       }
     }
   }, [])
+
+  useEffect(() => {
+    if (recoverySession && playlist.length > 0) {
+      setRecoverySession(null)
+      autosaveReady.current = true
+    }
+  }, [playlist, recoverySession])
+
+  useEffect(() => {
+    if (!autosaveReady.current) return
+    const payload = serializePlaylistItems(playlist)
+    const signature = JSON.stringify(payload)
+    if (signature === lastAutosave.current || signature === pendingAutosave.current) return
+    pendingAutosave.current = signature
+    clearTimeout(autosaveTimer.current)
+    autosaveTimer.current = setTimeout(() => {
+      const electron = getElectron()
+      if (electron) {
+        electron.ipcRenderer.send('write-autosave', payload)
+      }
+      lastAutosave.current = signature
+      pendingAutosave.current = null
+    }, AUTOSAVE_DELAY_MS)
+  }, [playlist])
 
   useEffect(() => {
     if (!obsSettings.enabled) {
@@ -280,19 +388,27 @@ const App = () => {
         return
       }
 
-      if (e.key === ' ') {
+      const key = typeof e.key === 'string' ? e.key.toLowerCase() : ''
+      const hasModifier = e.ctrlKey || e.altKey || e.metaKey
+
+      if (e.repeat && !hasModifier && [' ', 'enter', 'delete', 'n', 's'].includes(key)) {
+        e.preventDefault()
+        return
+      }
+
+      if (key === ' ' && !hasModifier) {
         e.preventDefault()
         if (isPlaying) {
           handleStop()
         } else {
           handlePlay()
         }
-      } else if (e.key === 'Enter') {
+      } else if (key === 'enter' && !hasModifier) {
         e.preventDefault()
         if (selectedItems.length === 1) {
           handleCue(selectedItems[0].id)
         }
-      } else if (e.key === 'Delete') {
+      } else if (key === 'delete' && !hasModifier) {
         e.preventDefault()
         if (selectedItems.length > 0) {
           const hasPlayingItem = selectedItems.some(item =>
@@ -303,32 +419,32 @@ const App = () => {
           }
           setShowDeleteConfirm(true)
         }
-      } else if (e.ctrlKey && e.key === 'c') {
+      } else if (e.ctrlKey && key === 'c') {
         e.preventDefault()
         if (selectedItems.length > 0) {
           setCopiedItems([...selectedItems])
           addLog(`Copied ${selectedItems.length} item(s)`, 'info')
         }
-      } else if (e.ctrlKey && e.key === 'v') {
+      } else if (e.ctrlKey && key === 'v') {
         e.preventDefault()
         if (copiedItems.length > 0) {
           handlePasteItems()
         }
-      } else if (e.ctrlKey && e.key === 'z') {
+      } else if (e.ctrlKey && key === 'z') {
         e.preventDefault()
         handleUndo()
-      } else if (e.ctrlKey && e.key === 'q') {
+      } else if (e.ctrlKey && key === 'q') {
         e.preventDefault()
         handleExit()
-      } else if (e.key === 'ArrowUp') {
+      } else if (key === 'arrowup' && !hasModifier) {
         e.preventDefault()
         handleArrowNavigation('up')
-      } else if (e.key === 'ArrowDown') {
+      } else if (key === 'arrowdown' && !hasModifier) {
         e.preventDefault()
         handleArrowNavigation('down')
-      } else if (e.key === 'n' || e.key === 'N') {
+      } else if (key === 'n' && !hasModifier) {
         handleNext()
-      } else if (e.key === 's' || e.key === 'S') {
+      } else if (key === 's' && !hasModifier) {
         handleStop()
       }
     }
@@ -346,7 +462,7 @@ const App = () => {
       window.removeEventListener('keydown', handleKeyDown)
       window.removeEventListener('keyup', handleKeyUp)
     }
-  }, [selectedItems, copiedItems, isPlaying, showDeleteConfirm, showNoteInput, showOBSEventModal, showOutputSettings, currentItem, outputWindowActive])
+  }, [playlist, selectedItems, copiedItems, isPlaying, showDeleteConfirm, showNoteInput, showOBSEventModal, showOutputSettings, currentItem, outputWindowActive])
 
   const loadPlaylist = async () => {
     try {
@@ -398,18 +514,34 @@ const App = () => {
   }
 
   const pushAction = (action) => {
-    if (currentItem && currentItem.is_playing) {
-      return
-    }
     lastAction.current = action
   }
 
-  const handleUndo = async () => {
-    if (currentItem && currentItem.is_playing) {
-      addLog('Cannot undo while video is playing', 'warning')
-      return
-    }
+  const getCurrentIndex = () => {
+    return currentItem ? playlist.findIndex(i => i.id === currentItem.id) : -1
+  }
 
+  const insertItemAt = (item, index) => {
+    if (item.type === 'stop') {
+      return api.insertStopEvent(index)
+    }
+    if (item.type === 'note') {
+      return api.insertNote(index, item.note || '')
+    }
+    if (item.type === 'obs') {
+      return api.insertOBSEvent(index, item.obs_scene || '', item.obs_source || '', item.obs_action || 'show', item.obs_transition || '', item.obs_transition_duration || 0)
+    }
+    if (item.location) {
+      return api.addItem(item.location, index, item.loop)
+    }
+    return Promise.resolve(null)
+  }
+
+  const insertedItemId = (result) => {
+    return result && result.item ? result.item.id : null
+  }
+
+  const handleUndo = async () => {
     if (!lastAction.current) {
       addLog('Nothing to undo', 'warning')
       return
@@ -419,113 +551,48 @@ const App = () => {
       pauseWebSocketUpdates.current = true
 
       const action = lastAction.current
+      const currentPlaylist = await api.getPlaylist()
+      const playingId = currentItem ? currentItem.id : null
+      const currentPlayingIndex = playingId !== null ? currentPlaylist.playlist.findIndex(i => i.id === playingId) : -1
 
-      if (action.type === 'add_files') {
-        for (const filepath of action.filepaths) {
-          const currentPlaylist = await api.getPlaylist()
-          const itemToRemove = currentPlaylist.playlist.find(item => item.location === filepath)
-          if (itemToRemove) {
-            await api.removeItem(itemToRemove.id)
-          }
-        }
-      } else if (action.type === 'insert_stop') {
-        const currentPlaylist = await api.getPlaylist()
-        const stops = currentPlaylist.playlist.filter(item => item.type === 'stop')
-        if (stops.length > 0) {
-          const lastStop = stops[stops.length - 1]
-          await api.removeItem(lastStop.id)
-        }
-      } else if (action.type === 'insert_note') {
-        const currentPlaylist = await api.getPlaylist()
-        const itemToRemove = currentPlaylist.playlist.find(item =>
-          item.type === 'note' && item.id === action.noteId
-        )
-        if (itemToRemove) {
-          await api.removeItem(itemToRemove.id)
-        }
-      } else if (action.type === 'delete_items') {
-        const currentPlaylist = await api.getPlaylist()
-        const currentPlayingIndex = currentPlaylist.playlist.findIndex(i =>
-          currentItem && i.id === currentItem.id
-        )
-
-        for (let i = 0; i < action.items.length; i++) {
-          const item = action.items[i]
-          const originalIndex = action.originalIndices[i] || 999999
-
-          if (currentPlayingIndex >= 0 && originalIndex <= currentPlayingIndex) {
-            continue
-          }
-
-          if (item.type === 'stop') {
-            await api.insertStopEvent(originalIndex)
-          } else if (item.type === 'note') {
-            await api.insertNote(originalIndex, item.note || '')
-          } else if (item.type === 'obs') {
-            await api.insertOBSEvent(originalIndex, item.obs_scene, item.obs_source, item.obs_action, item.obs_transition || '', item.obs_transition_duration || 0)
-          } else if (item.location) {
-            const fileCheck = await api.checkFileExists(item.location)
-            if (fileCheck.exists) {
-              await api.addItem(item.location)
-              const updated = await api.getPlaylist()
-              const newItemIndex = updated.playlist.length - 1
-              await api.reorderItems(newItemIndex, originalIndex)
-            }
-          }
-        }
-      } else if (action.type === 'paste_items') {
-        const currentPlaylist = await api.getPlaylist()
-        const playingId = currentItem ? currentItem.id : null
-        for (const entry of action.items) {
-          const id = entry.id
-          if (id == null || id === playingId) {
-            continue
-          }
-          const exists = currentPlaylist.playlist.find(i => i.id === id)
-          if (exists) {
+      if (action.type === 'added_items') {
+        for (const id of action.itemIds) {
+          if (id !== playingId && currentPlaylist.playlist.some(i => i.id === id)) {
             await api.removeItem(id)
           }
         }
+      } else if (action.type === 'delete_items') {
+        const entries = action.items
+          .map((item, i) => ({ item, index: action.originalIndices[i] }))
+          .filter(entry => typeof entry.index === 'number' && entry.index >= 0)
+          .sort((a, b) => a.index - b.index)
+
+        for (const { item, index } of entries) {
+          if (currentPlayingIndex >= 0 && index <= currentPlayingIndex) {
+            continue
+          }
+          if (item.location && item.type !== 'stop' && item.type !== 'note' && item.type !== 'obs') {
+            const fileCheck = await api.checkFileExists(item.location)
+            if (!fileCheck.exists) {
+              continue
+            }
+          }
+          await insertItemAt(item, index)
+        }
       } else if (action.type === 'reorder') {
         await api.reorderItems(action.toIndex, action.fromIndex)
-      } else if (action.type === 'reorder_multiple') {
-        const currentPlaylist = await api.getPlaylist()
-
-        for (let i = action.items.length - 1; i >= 0; i--) {
-          const itemIndex = action.toIndex + i
-          if (itemIndex < currentPlaylist.playlist.length) {
-            await api.removeItem(currentPlaylist.playlist[itemIndex].id)
-          }
-        }
-
-        for (let i = 0; i < action.items.length; i++) {
-          const item = action.items[i]
-          const insertPos = action.fromIndex + i
-
-          if (item.type === 'stop') {
-            await api.insertStopEvent(insertPos)
-          } else if (item.type === 'note') {
-            await api.insertNote(insertPos, item.note || 'Note')
-          } else if (item.location) {
-            await api.addItem(item.location)
-            const updated = await api.getPlaylist()
-            const lastIdx = updated.playlist.length - 1
-            await api.reorderItems(lastIdx, insertPos)
-          }
-        }
+      } else if (action.type === 'move_items') {
+        await api.moveItems(action.itemIds, action.position)
       }
 
       const finalState = await api.getPlaylist()
       setPlaylist(finalState.playlist)
-
       lastAction.current = null
-
-      pauseWebSocketUpdates.current = false
-
       addLog('Undo successful', 'info')
     } catch (error) {
-      pauseWebSocketUpdates.current = false
       addLog('Undo failed', 'error')
+    } finally {
+      pauseWebSocketUpdates.current = false
     }
   }
 
@@ -586,45 +653,32 @@ const App = () => {
       if (selectedItems.length === 1) {
         insertIndex = playlist.findIndex(i => i.id === selectedItems[0].id) + 1
       }
+      const currentIndex = getCurrentIndex()
+      if (isPlaying && currentIndex >= 0 && insertIndex <= currentIndex) {
+        insertIndex = currentIndex + 1
+      }
 
-      const pastedItems = []
-
-      for (let i = 0; i < copiedItems.length; i++) {
-        const item = copiedItems[i]
-        const currentInsertIndex = insertIndex + i
-
-        if (item.type === 'stop') {
-          const result = await api.insertStopEvent(currentInsertIndex)
-          if (result && result.item) pastedItems.push({ id: result.item.id })
-        } else if (item.type === 'note') {
-          const result = await api.insertNote(currentInsertIndex, item.note || 'Note')
-          if (result && result.item_id != null) pastedItems.push({ id: result.item_id })
-        } else if (item.type === 'obs') {
-          const result = await api.insertOBSEvent(currentInsertIndex, item.obs_scene, item.obs_source, item.obs_action, item.obs_transition || '', item.obs_transition_duration || 0)
-          if (result && result.item_id != null) pastedItems.push({ id: result.item_id })
-        } else if (item.location) {
-          const result = await api.addItem(item.location)
-          const currentPlaylist = await api.getPlaylist()
-          const newItemIndex = currentPlaylist.playlist.length - 1
-          await api.reorderItems(newItemIndex, currentInsertIndex)
-          if (result && result.item) pastedItems.push({ id: result.item.id })
+      const pastedIds = []
+      for (const item of copiedItems) {
+        const result = await insertItemAt(item, insertIndex + pastedIds.length)
+        const id = insertedItemId(result)
+        if (id !== null) {
+          pastedIds.push(id)
         }
       }
 
       const finalState = await api.getPlaylist()
       setPlaylist(finalState.playlist)
 
-      pushAction({
-        type: 'paste_items',
-        items: pastedItems
-      })
+      if (pastedIds.length > 0) {
+        pushAction({ type: 'added_items', itemIds: pastedIds })
+      }
 
-      pauseWebSocketUpdates.current = false
-
-      addLog(`Pasted ${copiedItems.length} item(s)`, 'info')
+      addLog(`Pasted ${pastedIds.length} item(s)`, 'info')
     } catch (error) {
-      pauseWebSocketUpdates.current = false
       addLog('Error pasting items', 'error')
+    } finally {
+      pauseWebSocketUpdates.current = false
     }
   }
 
@@ -677,79 +731,112 @@ const App = () => {
   }
 
   const handleAddFiles = async () => {
-    const { ipcRenderer } = window.require('electron')
+    const electron = getElectron()
+    if (!electron) return
 
     try {
-      const filePaths = await ipcRenderer.invoke('select-files')
+      const filePaths = await electron.ipcRenderer.invoke('select-files')
+      if (!filePaths || filePaths.length === 0) return
 
-      if (filePaths && filePaths.length > 0) {
-        addLog(`Adding ${filePaths.length} file(s) to playlist...`, 'info')
+      addLog(`Adding ${filePaths.length} file(s) to playlist...`, 'info')
+      pauseWebSocketUpdates.current = true
 
-        pauseWebSocketUpdates.current = true
-
-        const addedFiles = []
-        for (const filepath of filePaths) {
-          try {
-            await api.addItem(filepath)
-            addedFiles.push(filepath)
-          } catch (error) {
-            addLog(`Failed to add ${filepath}`, 'error')
+      const addedIds = []
+      for (const filepath of filePaths) {
+        try {
+          const id = insertedItemId(await api.addItem(filepath))
+          if (id !== null) {
+            addedIds.push(id)
           }
+        } catch (error) {
+          addLog(`Failed to add ${filepath}`, 'error')
         }
-
-        const finalState = await api.getPlaylist()
-        setPlaylist(finalState.playlist)
-
-        if (addedFiles.length > 0) {
-          pushAction({
-            type: 'add_files',
-            filepaths: addedFiles
-          })
-        }
-
-        pauseWebSocketUpdates.current = false
-
-        addLog(`Successfully added ${addedFiles.length} file(s)`, 'info')
       }
+
+      const finalState = await api.getPlaylist()
+      setPlaylist(finalState.playlist)
+
+      if (addedIds.length > 0) {
+        pushAction({ type: 'added_items', itemIds: addedIds })
+      }
+      addLog(`Successfully added ${addedIds.length} file(s)`, 'info')
     } catch (error) {
       addLog('Error selecting files', 'error')
+    } finally {
+      pauseWebSocketUpdates.current = false
     }
   }
 
   const handleClearPlaylist = async () => {
-    if (window.confirm('¿Estás seguro de que quieres vaciar toda la playlist?')) {
-      try {
-        const itemsToDelete = [...playlist]
-        const originalIndices = itemsToDelete.map((item, index) => index)
+    if (!window.confirm('Are you sure you want to clear the entire playlist?')) return
 
-        pauseWebSocketUpdates.current = true
+    try {
+      const itemsToDelete = [...playlist]
+      pauseWebSocketUpdates.current = true
 
-        for (const item of playlist) {
-          await api.removeItem(item.id)
-        }
-
-        const finalState = await api.getPlaylist()
-        setPlaylist(finalState.playlist)
-
-        pushAction({
-          type: 'delete_items',
-          items: itemsToDelete.map(item => ({
-            id: item.id,
-            type: item.type,
-            location: item.location,
-            note: item.note
-          })),
-          originalIndices
-        })
-
-        pauseWebSocketUpdates.current = false
-
-        setSelectedItems([])
-        addLog('Playlist cleared', 'info')
-      } catch (error) {
-        pauseWebSocketUpdates.current = false
-        addLog('Error clearing playlist', 'error')
+      for (const item of itemsToDelete) {
+        await api.removeItem(item.id)
       }
+
+      const finalState = await api.getPlaylist()
+      setPlaylist(finalState.playlist)
+
+      pushAction({
+        type: 'delete_items',
+        items: serializePlaylistItems(itemsToDelete),
+        originalIndices: itemsToDelete.map((item, index) => index)
+      })
+
+      setSelectedItems([])
+      addLog('Playlist cleared', 'info')
+    } catch (error) {
+      addLog('Error clearing playlist', 'error')
+    } finally {
+      pauseWebSocketUpdates.current = false
+    }
+  }
+
+  const resolvePlaylistInsertIndex = () => {
+    if (selectedItems.length === 0) return playlist.length
+    const lastSelectedIndex = playlist.findIndex(item => item.id === selectedItems[selectedItems.length - 1].id)
+    if (lastSelectedIndex < 0) return playlist.length
+    const currentIndex = getCurrentIndex()
+    if (currentIndex >= 0 && lastSelectedIndex < currentIndex) return null
+    return lastSelectedIndex + 1
+  }
+
+  const insertPlaylistItems = async (items, insertIndex) => {
+    let inserted = 0
+    pauseWebSocketUpdates.current = true
+    try {
+      for (const item of items) {
+        const result = await insertItemAt(item, insertIndex + inserted)
+        if (insertedItemId(result) !== null) {
+          inserted++
+        }
+      }
+      const finalState = await api.getPlaylist()
+      setPlaylist(finalState.playlist)
+    } finally {
+      pauseWebSocketUpdates.current = false
+    }
+
+    setTimeout(() => {
+      api.getPlaylist()
+        .then(state => setPlaylist(state.playlist))
+        .catch(() => {})
+    }, 2000)
+    return inserted
+  }
+
+  const loadPlaylistFile = async (file, insertIndex) => {
+    addLog(`Loading playlist: ${file.name}`, 'info')
+    try {
+      const items = extractPlaylistItems(JSON.parse(await file.text()))
+      const count = await insertPlaylistItems(items, insertIndex)
+      addLog(`Loaded ${count} items from ${file.name}`, 'info')
+    } catch (error) {
+      addLog('Error loading playlist file', 'error')
     }
   }
 
@@ -763,136 +850,61 @@ const App = () => {
     e.stopPropagation()
 
     const files = Array.from(e.dataTransfer.files)
-    if (files.length === 0) return
+    const playlistFile = files.find(f => f.name.toLowerCase().endsWith('.flowair'))
+    if (!playlistFile) return
 
-    const playlistFile = files.find(f => f.name.endsWith('.flowair'))
-
-    if (playlistFile) {
-      addLog(`Loading playlist: ${playlistFile.name}`, 'info')
-      try {
-        const text = await playlistFile.text()
-        const data = JSON.parse(text)
-
-        let insertIndex = playlist.length
-
-        if (selectedItems.length > 0) {
-          const lastSelectedIndex = playlist.findIndex(item => item.id === selectedItems[selectedItems.length - 1].id)
-          const currentIdx = currentItem ? playlist.findIndex(item => item.id === currentItem.id) : -1
-          if (lastSelectedIndex >= 0 && currentIdx >= 0 && lastSelectedIndex < currentIdx) {
-            addLog('Cannot insert playlist in grayed area', 'warning')
-            return
-          }
-          insertIndex = lastSelectedIndex + 1
-        }
-
-        pauseWebSocketUpdates.current = true
-
-        for (let i = 0; i < data.length; i++) {
-          const item = data[i]
-          const actualIndex = insertIndex + i
-
-          if (item.type === 'stop') {
-            await api.insertStopEvent(actualIndex)
-          } else if (item.type === 'note') {
-            await api.insertNote(actualIndex, item.note)
-          } else if (item.type === 'obs') {
-            await api.insertOBSEvent(actualIndex, item.obs_scene, item.obs_source || '', item.obs_action, item.obs_transition || '', item.obs_transition_duration || 0)
-          } else if (item.type === 'video' || item.type === 'image') {
-            await api.addItem(item.location, actualIndex)
-          }
-        }
-
-        const finalState = await api.getPlaylist()
-        setPlaylist(finalState.playlist)
-        pauseWebSocketUpdates.current = false
-
-        addLog(`Loaded ${data.length} items from ${playlistFile.name}`, 'info')
-      } catch (error) {
-        pauseWebSocketUpdates.current = false
-        addLog('Error loading playlist file', 'error')
-      }
+    const insertIndex = resolvePlaylistInsertIndex()
+    if (insertIndex === null) {
+      addLog('Cannot insert playlist in grayed area', 'warning')
+      return
     }
+    await loadPlaylistFile(playlistFile, insertIndex)
   }
 
   const handleExternalDrop = async (files, insertIndex) => {
-    if (files && files.length > 0) {
-      const filesArray = Array.from(files)
-      const playlistFile = filesArray.find(f => f.name.endsWith('.flowair'))
+    if (!files || files.length === 0) return
+    const filesArray = Array.from(files)
 
-      if (playlistFile) {
-        addLog(`Loading playlist: ${playlistFile.name}`, 'info')
-        try {
-          const text = await playlistFile.text()
-          const data = JSON.parse(text)
+    const playlistFile = filesArray.find(f => f.name.toLowerCase().endsWith('.flowair'))
+    if (playlistFile) {
+      await loadPlaylistFile(playlistFile, insertIndex)
+      return
+    }
 
-          pauseWebSocketUpdates.current = true
+    const electron = getElectron()
+    addLog(`Adding ${filesArray.length} file(s) via drag & drop...`, 'info')
+    pauseWebSocketUpdates.current = true
 
-          for (let i = 0; i < data.length; i++) {
-            const item = data[i]
-            const actualIndex = insertIndex + i
-
-            if (item.type === 'stop') {
-              await api.insertStopEvent(actualIndex)
-            } else if (item.type === 'note') {
-              await api.insertNote(actualIndex, item.note)
-            } else if (item.type === 'obs') {
-              await api.insertOBSEvent(actualIndex, item.obs_scene, item.obs_source || '', item.obs_action, item.obs_transition || '', item.obs_transition_duration || 0)
-            } else if (item.type === 'video' || item.type === 'image') {
-              await api.addItem(item.location, actualIndex)
-            }
-          }
-
-          const finalState = await api.getPlaylist()
-          setPlaylist(finalState.playlist)
-          pauseWebSocketUpdates.current = false
-
-          addLog(`Loaded ${data.length} items from ${playlistFile.name}`, 'info')
-
-          setTimeout(async () => {
-            const updatedState = await api.getPlaylist()
-            setPlaylist(updatedState.playlist)
-          }, 2000)
-        } catch (error) {
-          pauseWebSocketUpdates.current = false
-          addLog('Error loading playlist file', 'error')
+    const addedIds = []
+    try {
+      for (const file of filesArray) {
+        const filepath = electron && electron.webUtils ? electron.webUtils.getPathForFile(file) : file.path
+        if (!filepath) {
+          addLog(`Cannot read the location of ${file.name}`, 'error')
+          continue
         }
-        return
-      }
-
-      addLog(`Adding ${files.length} file(s) via drag & drop...`, 'info')
-
-      pauseWebSocketUpdates.current = true
-
-      const addedFiles = []
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i]
-        const filepath = file.path || file.name
-
         try {
-          await api.addItem(filepath)
-          const currentPlaylist = await api.getPlaylist()
-          const newItemIndex = currentPlaylist.playlist.length - 1
-          await api.reorderItems(newItemIndex, insertIndex + i)
-          addedFiles.push(filepath)
+          const id = insertedItemId(await api.addItem(filepath, insertIndex + addedIds.length))
+          if (id !== null) {
+            addedIds.push(id)
+          }
         } catch (error) {
-          addLog(`Failed to add ${file.name}: ${error.message}`, 'error')
+          addLog(`Failed to add ${file.name}`, 'error')
         }
       }
 
       const finalState = await api.getPlaylist()
       setPlaylist(finalState.playlist)
-
-      if (addedFiles.length > 0) {
-        pushAction({
-          type: 'add_files',
-          filepaths: addedFiles
-        })
-      }
-
+    } catch (error) {
+      addLog('Error adding dropped files', 'error')
+    } finally {
       pauseWebSocketUpdates.current = false
-
-      addLog(`Successfully processed ${files.length} file(s)`, 'info')
     }
+
+    if (addedIds.length > 0) {
+      pushAction({ type: 'added_items', itemIds: addedIds })
+    }
+    addLog(`Successfully added ${addedIds.length} file(s)`, 'info')
   }
 
   const handlePlay = async () => {
@@ -945,36 +957,20 @@ const App = () => {
 
   const handleExit = () => {
     const confirmed = window.confirm('Are you sure you want to exit FlowAir?\n\nThis will close the application completely.')
-    if (confirmed) {
-      try {
-        const { ipcRenderer } = window.require('electron')
-        ipcRenderer.send('exit-app')
-      } catch (error) {
-        window.close()
-      }
+    if (!confirmed) return
+    const electron = getElectron()
+    if (electron) {
+      electron.ipcRenderer.send('exit-app')
+    } else {
+      window.close()
     }
   }
 
   const handleSavePlaylist = async () => {
+    const electron = getElectron()
+    if (!electron) return
     try {
-      const playlistToSave = playlist.map(item => ({
-        type: item.type,
-        name: item.name,
-        location: item.location,
-        duration: item.duration,
-        duration_formatted: item.duration_formatted,
-        note: item.note,
-        loop: item.loop,
-        obs_scene: item.obs_scene,
-        obs_source: item.obs_source,
-        obs_action: item.obs_action,
-        obs_transition: item.obs_transition,
-        obs_transition_duration: item.obs_transition_duration
-      }))
-
-      const { ipcRenderer } = window.require('electron')
-      const result = await ipcRenderer.invoke('save-playlist', playlistToSave)
-
+      const result = await electron.ipcRenderer.invoke('save-playlist', serializePlaylistItems(playlist))
       if (result.success) {
         addLog(`Playlist saved: ${result.path}`, 'info')
       } else if (!result.canceled) {
@@ -986,61 +982,48 @@ const App = () => {
   }
 
   const handleLoadPlaylist = async () => {
+    const electron = getElectron()
+    if (!electron) return
     try {
-      const { ipcRenderer } = window.require('electron')
-      const result = await ipcRenderer.invoke('load-playlist')
-
+      const result = await electron.ipcRenderer.invoke('load-playlist')
       if (result.success && result.data) {
-        let insertIndex = playlist.length
-
-        if (selectedItems.length > 0) {
-          const lastSelectedIndex = playlist.findIndex(item => item.id === selectedItems[selectedItems.length - 1].id)
-          const currentIdx = currentItem ? playlist.findIndex(item => item.id === currentItem.id) : -1
-          if (lastSelectedIndex >= 0 && currentIdx >= 0 && lastSelectedIndex < currentIdx) {
-            addLog('Cannot insert playlist in grayed area', 'warning')
-            return
-          }
-          insertIndex = lastSelectedIndex + 1
+        const insertIndex = resolvePlaylistInsertIndex()
+        if (insertIndex === null) {
+          addLog('Cannot insert playlist in grayed area', 'warning')
+          return
         }
-
-        pauseWebSocketUpdates.current = true
-
-        for (let i = 0; i < result.data.length; i++) {
-          const item = result.data[i]
-          const actualIndex = insertIndex + i
-
-          if (item.type === 'stop') {
-            await api.insertStopEvent(actualIndex)
-          } else if (item.type === 'note') {
-            await api.insertNote(actualIndex, item.note)
-          } else if (item.type === 'obs') {
-            await api.insertOBSEvent(actualIndex, item.obs_scene, item.obs_source || '', item.obs_action, item.obs_transition || '', item.obs_transition_duration || 0)
-          } else if (item.type === 'video' || item.type === 'image') {
-            await api.addItem(item.location, actualIndex)
-          }
-        }
-
-        const finalState = await api.getPlaylist()
-        setPlaylist(finalState.playlist)
-        pauseWebSocketUpdates.current = false
-
-        addLog(`Loaded ${result.data.length} items from playlist`, 'info')
-
-        setTimeout(async () => {
-          const updatedState = await api.getPlaylist()
-          setPlaylist(updatedState.playlist)
-        }, 2000)
+        const count = await insertPlaylistItems(extractPlaylistItems(result.data), insertIndex)
+        addLog(`Loaded ${count} items from playlist`, 'info')
       } else if (!result.canceled) {
         addLog('Error loading playlist', 'error')
       }
     } catch (error) {
-      pauseWebSocketUpdates.current = false
       addLog('Error loading playlist', 'error')
     }
   }
 
-  const handleVideoEnded = useCallback(async () => {
-  }, [isPlaying])
+  const handleRestoreSession = async () => {
+    if (!recoverySession) return
+    const { items } = recoverySession
+    setRecoverySession(null)
+    autosaveReady.current = true
+    try {
+      const count = await insertPlaylistItems(items, playlist.length)
+      addLog(`Restored ${count} item(s) from the last session`, 'info')
+    } catch (error) {
+      addLog('Error restoring the last session', 'error')
+    }
+  }
+
+  const handleDismissSession = () => {
+    setRecoverySession(null)
+    autosaveReady.current = true
+    lastAutosave.current = JSON.stringify([])
+    const electron = getElectron()
+    if (electron) {
+      electron.ipcRenderer.send('write-autosave', [])
+    }
+  }
 
   const handleVolumeChange = (value) => {
     const vol = Math.max(0, Math.min(100, Math.round(value)))
@@ -1068,125 +1051,73 @@ const App = () => {
       pauseWebSocketUpdates.current = true
 
       const currentPlaylist = await api.getPlaylist()
-      const itemToDelete = currentPlaylist.playlist.find(i => i.id === itemId)
       const itemIndex = currentPlaylist.playlist.findIndex(i => i.id === itemId)
+      const itemToDelete = itemIndex >= 0 ? currentPlaylist.playlist[itemIndex] : null
 
       await api.removeItem(itemId)
 
       const finalState = await api.getPlaylist()
       setPlaylist(finalState.playlist)
-      setSelectedItems(selectedItems.filter(i => i.id !== itemId))
+      setSelectedItems(prev => prev.filter(i => i.id !== itemId))
 
       if (itemToDelete) {
         pushAction({
           type: 'delete_items',
-          items: [itemToDelete],
+          items: serializePlaylistItems([itemToDelete]),
           originalIndices: [itemIndex]
         })
       }
 
-      pauseWebSocketUpdates.current = false
-
       addLog('Item removed from playlist', 'info')
     } catch (error) {
-      pauseWebSocketUpdates.current = false
       addLog('Error removing item', 'error')
+    } finally {
+      pauseWebSocketUpdates.current = false
     }
   }
 
   const handleReorder = async (fromIndex, toIndex, isDuplicate) => {
+    const draggedItem = playlist[fromIndex]
+    if (!draggedItem) return
+
     try {
       pauseWebSocketUpdates.current = true
-
-      const draggedItem = playlist[fromIndex]
-      const isItemSelected = selectedItems.find(i => i.id === draggedItem.id)
+      const isItemSelected = selectedItems.some(i => i.id === draggedItem.id)
 
       if (isItemSelected && selectedItems.length > 1) {
-        const sortedIndices = selectedItems
-          .map(item => playlist.findIndex(p => p.id === item.id))
-          .sort((a, b) => a - b)
+        const selectedIds = new Set(selectedItems.map(item => item.id))
+        const movingIds = playlist.filter(item => selectedIds.has(item.id)).map(item => item.id)
+        const originalPosition = playlist.findIndex(item => selectedIds.has(item.id))
+        const position = playlist.slice(0, toIndex).filter(item => !selectedIds.has(item.id)).length
 
-        const itemsToMove = sortedIndices.map(idx => playlist[idx])
-        const originalFirstIndex = sortedIndices[0]
-
-        let adjustedInsertIndex = toIndex
-        for (let i = sortedIndices.length - 1; i >= 0; i--) {
-          const idx = sortedIndices[i]
-          if (idx < toIndex) {
-            adjustedInsertIndex--
-          }
-          await api.removeItem(playlist[idx].id)
-        }
-
-        for (let i = 0; i < itemsToMove.length; i++) {
-          const item = itemsToMove[i]
-          const insertPos = adjustedInsertIndex + i
-
-          if (item.type === 'stop') {
-            await api.insertStopEvent(insertPos)
-          } else if (item.type === 'note') {
-            await api.insertNote(insertPos, item.note || 'Note')
-          } else if (item.location) {
-            await api.addItem(item.location)
-            const updated = await api.getPlaylist()
-            const lastIdx = updated.playlist.length - 1
-            await api.reorderItems(lastIdx, insertPos)
-          }
-        }
-
-        const finalState = await api.getPlaylist()
-        setPlaylist(finalState.playlist)
-
-        pushAction({
-          type: 'reorder_multiple',
-          fromIndex: originalFirstIndex,
-          toIndex: adjustedInsertIndex,
-          items: itemsToMove.map(item => ({
-            type: item.type,
-            location: item.location,
-            note: item.note
-          }))
-        })
-
-        pauseWebSocketUpdates.current = false
-
-        addLog(`Moved ${selectedItems.length} items`, 'info')
-      } else {
-        let adjustedToIndex = toIndex
-        if (toIndex > fromIndex) {
-          adjustedToIndex = toIndex - 1
-        }
-
-        if (isDuplicate) {
-          const item = playlist[fromIndex]
-          if (item.type === 'stop') {
-            await api.insertStopEvent(adjustedToIndex)
-          } else if (item.type === 'note') {
-            await api.insertNote(adjustedToIndex, item.note || 'Note')
-          } else if (item.location) {
-            await api.addItem(item.location)
-            await api.reorderItems(playlist.length, adjustedToIndex)
-          }
-          addLog('Item duplicated', 'info')
+        const result = await api.moveItems(movingIds, position)
+        if (result && result.success) {
+          pushAction({ type: 'move_items', itemIds: movingIds, position: originalPosition })
+          addLog(`Moved ${movingIds.length} items`, 'info')
         } else {
-          pushAction({
-            type: 'reorder',
-            fromIndex,
-            toIndex: adjustedToIndex
-          })
-
+          addLog('Items cannot be moved to that position', 'warning')
+        }
+      } else if (isDuplicate) {
+        const id = insertedItemId(await insertItemAt(draggedItem, toIndex))
+        if (id !== null) {
+          pushAction({ type: 'added_items', itemIds: [id] })
+        }
+        addLog('Item duplicated', 'info')
+      } else {
+        const adjustedToIndex = toIndex > fromIndex ? toIndex - 1 : toIndex
+        if (adjustedToIndex !== fromIndex) {
+          pushAction({ type: 'reorder', fromIndex, toIndex: adjustedToIndex })
           await api.reorderItems(fromIndex, adjustedToIndex)
           addLog(`Reordered item from position ${fromIndex + 1} to ${adjustedToIndex + 1}`, 'info')
         }
-
-        const finalState = await api.getPlaylist()
-        setPlaylist(finalState.playlist)
-
-        pauseWebSocketUpdates.current = false
       }
+
+      const finalState = await api.getPlaylist()
+      setPlaylist(finalState.playlist)
     } catch (error) {
-      pauseWebSocketUpdates.current = false
       addLog('Error reordering items', 'error')
+    } finally {
+      pauseWebSocketUpdates.current = false
     }
   }
 
@@ -1194,22 +1125,20 @@ const App = () => {
     try {
       pauseWebSocketUpdates.current = true
 
-      await api.insertStopEvent(insertIndex)
+      const id = insertedItemId(await api.insertStopEvent(insertIndex))
 
       const finalState = await api.getPlaylist()
       setPlaylist(finalState.playlist)
 
-      pushAction({
-        type: 'insert_stop',
-        insertIndex
-      })
-
-      pauseWebSocketUpdates.current = false
+      if (id !== null) {
+        pushAction({ type: 'added_items', itemIds: [id] })
+      }
 
       addLog('STOP EVENT inserted into playlist', 'info')
     } catch (error) {
-      pauseWebSocketUpdates.current = false
       addLog('Error inserting stop event', 'error')
+    } finally {
+      pauseWebSocketUpdates.current = false
     }
   }
 
@@ -1224,6 +1153,8 @@ const App = () => {
     }
 
     if (!note) {
+      setEditingNoteId(null)
+      setNoteInputValue('')
       setNoteInsertIndex(insertIndex)
       setShowNoteInput(true)
       return
@@ -1232,28 +1163,22 @@ const App = () => {
     try {
       pauseWebSocketUpdates.current = true
 
-      const result = await api.insertNote(insertIndex, note)
+      const id = insertedItemId(await api.insertNote(insertIndex, note))
 
       const finalState = await api.getPlaylist()
       setPlaylist(finalState.playlist)
 
-      if (result && result.item_id) {
-        pushAction({
-          type: 'insert_note',
-          noteId: result.item_id,
-          insertIndex,
-          note
-        })
+      if (id !== null) {
+        pushAction({ type: 'added_items', itemIds: [id] })
       }
-
-      pauseWebSocketUpdates.current = false
 
       addLog(`Note inserted: "${note}"`, 'info')
       setShowNoteInput(false)
       setNoteInputValue('')
     } catch (error) {
-      pauseWebSocketUpdates.current = false
       addLog('Error inserting note', 'error')
+    } finally {
+      pauseWebSocketUpdates.current = false
     }
   }
 
@@ -1320,11 +1245,7 @@ const App = () => {
 
   const handleApplyVideoSettings = async () => {
     try {
-      await fetch('http://localhost:8000/output_settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(outputSettings)
-      })
+      await api.updateOutputSettings(outputSettings)
 
       addLog('Video settings applied', 'info')
     } catch (error) {
@@ -1352,11 +1273,7 @@ const App = () => {
 
   const handleApplyNetworkStreaming = async () => {
     try {
-      await fetch('http://localhost:8000/output_settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(outputSettings)
-      })
+      await api.updateOutputSettings(outputSettings)
       addLog(`Network streaming ${outputSettings.networkStreamingEnabled ? 'enabled' : 'disabled'}`, 'info')
     } catch (error) {
       addLog('Error applying network streaming settings', 'error')
@@ -1496,11 +1413,7 @@ const App = () => {
       ipcRenderer.send('close-output-window')
       setOutputWindowActive(false)
 
-      await fetch('http://localhost:8000/output_settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(defaults)
-      })
+      await api.updateOutputSettings(defaults)
 
       const obsDefaults = { enabled: false, host: 'localhost', port: 4455, password: '' }
       setOBSSettings(obsDefaults)
@@ -1564,6 +1477,18 @@ const App = () => {
           </button>
         </div>
         <div style={styles.headerRight}>
+          {availableUpdate && (
+            <button
+              style={{...styles.headerButton, ...styles.updateButton}}
+              onClick={() => {
+                const electron = getElectron()
+                if (electron) electron.ipcRenderer.send('open-release-page')
+              }}
+              title="A new version of FlowAir is available. Click to open the download page."
+            >
+              Update v{availableUpdate.version}
+            </button>
+          )}
           <button style={styles.headerButton} onClick={() => setShowOutputSettings(true)}>Settings</button>
           <button style={{...styles.headerButton, ...styles.clearButton}} onClick={handleClearPlaylist}>Clear Playlist</button>
           <button style={styles.headerButton} onClick={handleAddFiles}>Add Files</button>
@@ -1572,6 +1497,17 @@ const App = () => {
           <button style={{...styles.headerButton, ...styles.exitHeaderButton}} onClick={handleExit}>Exit</button>
         </div>
       </div>
+
+      {recoverySession && (
+        <div style={styles.recoveryBar}>
+          <span style={styles.recoveryText}>
+            The last session ended with {recoverySession.items.length} item(s) in the playlist
+            {recoverySession.savedAt ? ` (saved ${new Date(recoverySession.savedAt).toLocaleString('en-US')})` : ''}. Restore it?
+          </span>
+          <button style={{...styles.headerButton, ...styles.recoveryPrimary}} onClick={handleRestoreSession}>Restore</button>
+          <button style={styles.headerButton} onClick={handleDismissSession}>Dismiss</button>
+        </div>
+      )}
 
       <div style={styles.mainContent} className="main-content-area">
         <div style={styles.leftPanel}>
@@ -1618,7 +1554,7 @@ const App = () => {
         </div>
 
         <div style={styles.rightPanel}>
-          <Preview currentItem={currentItem} isPlaying={isPlaying} onVideoEnded={handleVideoEnded} />
+          <Preview currentItem={currentItem} isPlaying={isPlaying} />
           {obsSettings.enabled && obsConnected && (
             <div style={styles.obsControlPanel}>
               <div style={styles.obsControlHeader}>
@@ -2321,10 +2257,30 @@ const styles = {
     borderColor: 'rgba(255, 91, 91, 0.4)',
     color: '#ff7a7a'
   },
-  lastSaved: {
-    fontSize: '11px',
-    color: 'var(--text-tertiary)',
-    marginLeft: '8px'
+  updateButton: {
+    background: 'var(--accent-soft)',
+    borderColor: 'rgba(76, 194, 255, 0.5)',
+    color: 'var(--accent-hover)',
+    fontWeight: '600'
+  },
+  recoveryBar: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+    padding: '8px 20px',
+    background: 'rgba(224, 179, 65, 0.12)',
+    borderBottom: '1px solid rgba(224, 179, 65, 0.35)'
+  },
+  recoveryText: {
+    flex: 1,
+    fontSize: '12px',
+    color: '#f0cd7a'
+  },
+  recoveryPrimary: {
+    background: 'rgba(224, 179, 65, 0.2)',
+    borderColor: 'rgba(224, 179, 65, 0.5)',
+    color: '#f0cd7a',
+    fontWeight: '600'
   },
   mainContent: {
     flex: 1,
@@ -2456,21 +2412,6 @@ const styles = {
     flexDirection: 'column',
     gap: '12px'
   },
-  settingSectionTitle: {
-    fontSize: '13px',
-    fontWeight: '600',
-    color: 'var(--accent)',
-    marginBottom: '4px',
-    borderBottom: '1px solid var(--stroke)',
-    paddingBottom: '6px',
-    textTransform: 'uppercase',
-    letterSpacing: '0.5px'
-  },
-  settingSectionDivider: {
-    height: '1px',
-    background: 'var(--stroke)',
-    margin: '4px 0'
-  },
   tabBar: {
     display: 'flex',
     borderBottom: '1px solid var(--stroke)',
@@ -2539,25 +2480,6 @@ const styles = {
     fontSize: '12px',
     cursor: 'pointer',
     outline: 'none'
-  },
-  settingInfo: {
-    marginTop: '10px',
-    padding: '14px',
-    background: 'var(--bg-base)',
-    border: '1px solid var(--stroke)',
-    borderRadius: 'var(--radius)'
-  },
-  settingInfoText: {
-    margin: '0 0 8px 0',
-    fontSize: '11px',
-    color: 'var(--text-secondary)',
-    lineHeight: '1.5'
-  },
-  urlContainer: {
-    flex: 1,
-    display: 'flex',
-    gap: '8px',
-    alignItems: 'center'
   },
   urlInput: {
     flex: 1,

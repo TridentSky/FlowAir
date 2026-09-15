@@ -75,24 +75,18 @@ const Playlist = ({
       return
     }
 
-    const isItemSelected = selectedItems.find(i => i.id === item.id)
-    if (!isItemSelected && selectedItems.length > 0) {
-      const hasPlayingInSelection = selectedItems.some(selected =>
-        currentItem && selected.id === currentItem.id
-      )
-      if (hasPlayingInSelection) {
+    const isItemSelected = selectedItems.some(i => i.id === item.id)
+    if (isItemSelected && selectedItems.length > 1) {
+      const hasLockedItemInSelection = selectedItems.some(selected => {
+        const selectedIndex = items.findIndex(i => i.id === selected.id)
+        const isSelectedPlaying = currentItem && selected.id === currentItem.id
+        const isSelectedPast = selectedIndex >= 0 && selectedIndex < currentIndex
+        return isSelectedPlaying || isSelectedPast
+      })
+      if (hasLockedItemInSelection) {
         e.preventDefault()
         return
       }
-    }
-
-    const hasPastInSelection = selectedItems.some(selected => {
-      const selectedIndex = items.findIndex(i => i.id === selected.id)
-      return selectedIndex >= 0 && selectedIndex < currentIndex
-    })
-    if (hasPastInSelection) {
-      e.preventDefault()
-      return
     }
 
     setDraggedIndex(index)
@@ -722,9 +716,6 @@ const styles = {
     boxShadow: '0 0 6px rgba(76, 194, 255, 0.9)',
     pointerEvents: 'none'
   },
-  itemDragOver: {
-    borderTop: '2px solid var(--accent)'
-  },
   cell: {
     background: 'var(--bg-layer-1)',
     padding: '7px 10px',
@@ -763,58 +754,6 @@ const styles = {
     background: 'var(--accent-soft)',
     borderColor: 'rgba(76, 194, 255, 0.5)',
     color: 'var(--accent-hover)'
-  },
-  stopEventRow: {
-    width: '100%',
-    height: '18px',
-    background: '#4a2020',
-    marginBottom: '1px',
-    cursor: 'pointer',
-    position: 'relative',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'flex-start',
-    paddingLeft: '10px',
-    transition: 'all 0.1s'
-  },
-  stopEventBar: {
-    fontSize: '9px',
-    fontWeight: '700',
-    color: '#ff8888',
-    letterSpacing: '0.5px',
-    textTransform: 'uppercase',
-    whiteSpace: 'nowrap'
-  },
-  stopEventSelected: {
-    position: 'relative'
-  },
-  noteSelected: {
-    position: 'relative'
-  },
-  noteRow: {
-    width: '100%',
-    height: '18px',
-    background: '#2a1a3a',
-    marginBottom: '1px',
-    cursor: 'pointer',
-    position: 'relative',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'flex-start',
-    paddingLeft: '10px',
-    transition: 'all 0.1s'
-  },
-  noteBar: {
-    fontSize: '9px',
-    fontWeight: '700',
-    color: '#bb88ff',
-    letterSpacing: '0.5px',
-    textTransform: 'uppercase',
-    whiteSpace: 'nowrap'
-  },
-  noteActions: {
-    display: 'flex',
-    gap: '4px'
   },
   contextMenu: {
     position: 'fixed',

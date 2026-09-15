@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect } from 'react'
 
 const Preview = ({ currentItem, isPlaying }) => {
   const [audioLevel, setAudioLevel] = useState(0)
@@ -214,19 +214,6 @@ const styles = {
     fontSize: '10px',
     color: 'var(--text-primary)',
     fontWeight: '500'
-  },
-  vuMeterSection: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '10px',
-    padding: '8px 0',
-    borderTop: '1px solid #1a1a1a'
-  },
-  vuLabel: {
-    fontSize: '9px',
-    color: '#888',
-    fontWeight: '600',
-    minWidth: '40px'
   },
   vuMeterContainer: {
     flex: 1,
