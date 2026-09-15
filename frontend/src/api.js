@@ -1,260 +1,106 @@
 const API_BASE = 'http://localhost:8000'
+const WS_URL = 'ws://localhost:8000/ws'
+const CLIENT_HEADERS = { 'X-FlowAir-Client': '1' }
+
+const get = async (path) => {
+  const response = await fetch(`${API_BASE}${path}`)
+  return response.json()
+}
+
+const post = async (path, body) => {
+  const options = { method: 'POST', headers: { ...CLIENT_HEADERS } }
+  if (body !== undefined) {
+    options.headers['Content-Type'] = 'application/json'
+    options.body = JSON.stringify(body)
+  }
+  const response = await fetch(`${API_BASE}${path}`, options)
+  return response.json()
+}
 
 export const api = {
-  async getPlaylist() {
-    const response = await fetch(`${API_BASE}/playlist`)
-    return response.json()
-  },
-
-  async addItem(filepath, insertIndex = null) {
-    const response = await fetch(`${API_BASE}/playlist/add`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filepath, insertIndex })
-    })
-    return response.json()
-  },
-
-  async removeItem(itemId) {
-    const response = await fetch(`${API_BASE}/playlist/remove`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ item_id: itemId })
-    })
-    return response.json()
-  },
-
-  async play() {
-    const response = await fetch(`${API_BASE}/player/play`, { method: 'POST' })
-    return response.json()
-  },
-
-  async stop() {
-    const response = await fetch(`${API_BASE}/player/stop`, { method: 'POST' })
-    return response.json()
-  },
-
-  async pause() {
-    const response = await fetch(`${API_BASE}/player/pause`, { method: 'POST' })
-    return response.json()
-  },
-
-  async next() {
-    const response = await fetch(`${API_BASE}/player/next`, { method: 'POST' })
-    return response.json()
-  },
-
-  async cue(itemId) {
-    const response = await fetch(`${API_BASE}/player/cue`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ item_id: itemId })
-    })
-    return response.json()
-  },
-
-  async reorderItems(fromIndex, toIndex) {
-    const response = await fetch(`${API_BASE}/playlist/reorder`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from_index: fromIndex, to_index: toIndex })
-    })
-    return response.json()
-  },
-
-  async insertStopEvent(insertIndex) {
-    const response = await fetch(`${API_BASE}/playlist/insert_stop`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ insert_index: insertIndex })
-    })
-    return response.json()
-  },
-
-  async insertNote(insertIndex, note) {
-    const response = await fetch(`${API_BASE}/playlist/insert_note`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ insert_index: insertIndex, note: note })
-    })
-    return response.json()
-  },
-
-  async updateNote(itemId, note) {
-    const response = await fetch(`${API_BASE}/playlist/update_note`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ item_id: itemId, note: note })
-    })
-    return response.json()
-  },
-
-  async toggleLoop(itemId) {
-    const response = await fetch(`${API_BASE}/playlist/toggle_loop/${itemId}`, {
-      method: 'POST'
-    })
-    return response.json()
-  },
-
-  async checkFileExists(filepath) {
-    const response = await fetch(`${API_BASE}/playlist/check-file`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filepath })
-    })
-    return response.json()
-  },
-
-  async getNetworkInfo() {
-    const response = await fetch(`${API_BASE}/network_info`)
-    return response.json()
-  },
-
-  async getOBSSettings() {
-    const response = await fetch(`${API_BASE}/obs/settings`)
-    return response.json()
-  },
-
-  async updateOBSSettings(settings) {
-    const response = await fetch(`${API_BASE}/obs/settings`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(settings)
-    })
-    return response.json()
-  },
-
-  async obsConnect() {
-    const response = await fetch(`${API_BASE}/obs/connect`, { method: 'POST' })
-    return response.json()
-  },
-
-  async obsDisconnect() {
-    const response = await fetch(`${API_BASE}/obs/disconnect`, { method: 'POST' })
-    return response.json()
-  },
-
-  async getOBSStatus() {
-    const response = await fetch(`${API_BASE}/obs/status`)
-    return response.json()
-  },
-
-  async getOBSScenes() {
-    const response = await fetch(`${API_BASE}/obs/scenes`)
-    return response.json()
-  },
-
-  async getOBSSceneSources(sceneName) {
-    const response = await fetch(`${API_BASE}/obs/scenes/${encodeURIComponent(sceneName)}/sources`)
-    return response.json()
-  },
-
-  async setOBSSourceVisibility(sceneName, sourceName, visible) {
-    const response = await fetch(`${API_BASE}/obs/source/visibility`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scene_name: sceneName, source_name: sourceName, visible })
-    })
-    return response.json()
-  },
-
-  async insertOBSEvent(insertIndex, obsScene, obsSource, obsAction, obsTransition = '', obsTransitionDuration = 0, itemId = null) {
-    const response = await fetch(`${API_BASE}/playlist/insert_obs_event`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        insert_index: insertIndex,
-        obs_scene: obsScene,
-        obs_source: obsSource,
-        obs_action: obsAction,
-        obs_transition: obsTransition,
-        obs_transition_duration: obsTransitionDuration,
-        item_id: itemId
-      })
-    })
-    return response.json()
-  },
-
-  async seekPlayer(position) {
-    const response = await fetch(`${API_BASE}/player/seek`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ position })
-    })
-    return response.json()
-  },
-
-  async setPlayerVolume(volume) {
-    const response = await fetch(`${API_BASE}/player/volume`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ volume })
-    })
-    return response.json()
-  },
-
-  async getOBSCurrentScene() {
-    const response = await fetch(`${API_BASE}/obs/current_scene`)
-    return response.json()
-  },
-
-  async setOBSScene(sceneName) {
-    const response = await fetch(`${API_BASE}/obs/set_scene`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scene_name: sceneName })
-    })
-    return response.json()
-  },
-
-  async getOBSTransitions() {
-    const response = await fetch(`${API_BASE}/obs/transitions`)
-    return response.json()
-  },
-
-  async setOBSTransition(transitionName, durationMs = 0) {
-    const response = await fetch(`${API_BASE}/obs/set_transition`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ transition_name: transitionName, duration_ms: durationMs })
-    })
-    return response.json()
-  },
+  getPlaylist: () => get('/playlist'),
+  addItem: (filepath, insertIndex = null, loop = false) => post('/playlist/add', { filepath, insertIndex, loop: Boolean(loop) }),
+  removeItem: (itemId) => post('/playlist/remove', { item_id: itemId }),
+  play: () => post('/player/play'),
+  stop: () => post('/player/stop'),
+  pause: () => post('/player/pause'),
+  next: () => post('/player/next'),
+  cue: (itemId) => post('/player/cue', { item_id: itemId }),
+  reorderItems: (fromIndex, toIndex) => post('/playlist/reorder', { from_index: fromIndex, to_index: toIndex }),
+  moveItems: (itemIds, position) => post('/playlist/move', { item_ids: itemIds, position }),
+  insertStopEvent: (insertIndex) => post('/playlist/insert_stop', { insert_index: insertIndex }),
+  insertNote: (insertIndex, note) => post('/playlist/insert_note', { insert_index: insertIndex, note }),
+  updateNote: (itemId, note) => post('/playlist/update_note', { item_id: itemId, note }),
+  toggleLoop: (itemId) => post(`/playlist/toggle_loop/${itemId}`),
+  checkFileExists: (filepath) => post('/playlist/check-file', { filepath }),
+  getNetworkInfo: () => get('/network_info'),
+  updateOutputSettings: (settings) => post('/output_settings', settings),
+  getOBSSettings: () => get('/obs/settings'),
+  updateOBSSettings: (settings) => post('/obs/settings', settings),
+  obsConnect: () => post('/obs/connect'),
+  obsDisconnect: () => post('/obs/disconnect'),
+  getOBSStatus: () => get('/obs/status'),
+  getOBSScenes: () => get('/obs/scenes'),
+  getOBSSceneSources: (sceneName) => get(`/obs/scenes/${encodeURIComponent(sceneName)}/sources`),
+  setOBSSourceVisibility: (sceneName, sourceName, visible) => post('/obs/source/visibility', { scene_name: sceneName, source_name: sourceName, visible }),
+  insertOBSEvent: (insertIndex, obsScene, obsSource, obsAction, obsTransition = '', obsTransitionDuration = 0, itemId = null) => post('/playlist/insert_obs_event', {
+    insert_index: insertIndex,
+    obs_scene: obsScene,
+    obs_source: obsSource,
+    obs_action: obsAction,
+    obs_transition: obsTransition,
+    obs_transition_duration: obsTransitionDuration,
+    item_id: itemId
+  }),
+  seekPlayer: (position) => post('/player/seek', { position }),
+  setPlayerVolume: (volume) => post('/player/volume', { volume }),
+  getOBSCurrentScene: () => get('/obs/current_scene'),
+  setOBSScene: (sceneName) => post('/obs/set_scene', { scene_name: sceneName }),
+  getOBSTransitions: () => get('/obs/transitions'),
+  setOBSTransition: (transitionName, durationMs = 0) => post('/obs/set_transition', { transition_name: transitionName, duration_ms: durationMs }),
 
   connectWebSocket(onMessage) {
-    let ws
+    let ws = null
+    let closed = false
     let reconnectAttempts = 0
+    let reconnectTimer = null
     const maxReconnectDelay = 10000
+
+    const scheduleReconnect = () => {
+      if (closed) return
+      const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), maxReconnectDelay)
+      reconnectAttempts++
+      reconnectTimer = setTimeout(connect, delay)
+    }
 
     const connect = () => {
       try {
-        ws = new WebSocket('ws://localhost:8000/ws')
-
+        ws = new WebSocket(WS_URL)
         ws.onopen = () => {
           reconnectAttempts = 0
         }
-
         ws.onmessage = (event) => {
-          const data = JSON.parse(event.data)
-          onMessage(data)
+          try {
+            onMessage(JSON.parse(event.data))
+          } catch (error) {
+          }
         }
-
         ws.onerror = () => {
         }
-
-        ws.onclose = () => {
-          const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), maxReconnectDelay)
-          reconnectAttempts++
-          setTimeout(connect, delay)
-        }
+        ws.onclose = scheduleReconnect
       } catch (error) {
-        const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), maxReconnectDelay)
-        reconnectAttempts++
-        setTimeout(connect, delay)
+        scheduleReconnect()
       }
     }
 
     connect()
-    return ws
+
+    return {
+      close() {
+        closed = true
+        clearTimeout(reconnectTimer)
+        if (ws) ws.close()
+      }
+    }
   }
 }
