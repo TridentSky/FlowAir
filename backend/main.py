@@ -886,6 +886,7 @@ async def player_page():
                 element.muted = true;
             });
 
+            const PRELOAD_LEAD_SECONDS = 20;
             let standbyItemId = null;
             let standbyReady = false;
             let currentVolume = 100;
@@ -1136,6 +1137,13 @@ async def player_page():
                 image.style.objectFit = objectFit;
             }
 
+            function remainingSeconds(item, elapsed) {
+                if (!item || item.type !== 'video') return 0;
+                const duration = Number(item.duration) || 0;
+                if (!duration) return 0;
+                return Math.max(0, duration - (Number(elapsed) || 0));
+            }
+
             function revealVideo() {
                 if (revealed) return;
                 if (!video.videoWidth) return;
@@ -1207,7 +1215,8 @@ async def player_page():
                 standby.load();
             }
 
-            function preloadNext(item) {
+            function preloadNext(item, remaining) {
+                if (typeof remaining === 'number' && remaining > PRELOAD_LEAD_SECONDS) return;
                 if (!item || item.type !== 'video' || item.id === currentItemId) {
                     if (standbyItemId !== null && (!item || item.id !== standbyItemId)) clearStandby();
                     return;
@@ -1427,11 +1436,11 @@ async def player_page():
 
                 if (item.id !== currentItemId) {
                     startLoad(item, data.elapsed || 0, data.is_playing);
-                    preloadNext(data.next_item);
+                    preloadNext(data.next_item, remainingSeconds(item, data.elapsed));
                     return;
                 }
 
-                preloadNext(data.next_item);
+                preloadNext(data.next_item, remainingSeconds(item, data.elapsed));
 
                 if (item.type === 'image') {
                     image.style.display = 'block';
@@ -1552,7 +1561,7 @@ async def player_page():
                             handlePlaybackState(data);
                             return;
                         }
-                        preloadNext(data.next_item);
+                        preloadNext(data.next_item, remainingSeconds(data.current_item, data.elapsed));
                         if (!data.is_playing) {
                             return;
                         }
@@ -1601,8 +1610,9 @@ async def player_page():
         }
     )
 
-STREAM_CHUNK_SIZE = 1048576
-RANGE_CHUNK_SIZE = 4194304
+STREAM_CHUNK_SIZE = 262144
+RANGE_CHUNK_SIZE = 1048576
+OPEN_RANGE_LIMIT = 16777216
 
 VIDEO_MIME_TYPES = {
     '.mp4': 'video/mp4',
@@ -1636,6 +1646,7 @@ def parse_byte_range(range_header, file_size):
             return None
         first_range = ranges.split(",")[0].strip()
         start_text, _, end_text = first_range.partition("-")
+        open_ended = False
         if start_text.strip() == "":
             suffix_length = int(end_text)
             if suffix_length <= 0:
@@ -1644,10 +1655,16 @@ def parse_byte_range(range_header, file_size):
             end = file_size - 1
         else:
             start = int(start_text)
-            end = int(end_text) if end_text.strip() else file_size - 1
+            if end_text.strip():
+                end = int(end_text)
+            else:
+                end = file_size - 1
+                open_ended = True
         end = min(end, file_size - 1)
         if start < 0 or start > end:
             return None
+        if open_ended:
+            end = min(end, start + OPEN_RANGE_LIMIT - 1)
         return start, end
     except ValueError:
         return None

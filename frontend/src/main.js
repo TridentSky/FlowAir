@@ -19,7 +19,9 @@ const BACKEND_RESTART_LIMIT = 5
 const BACKEND_RESTART_WINDOW_MS = 120000
 const UPDATE_CHECK_DELAY_MS = 20000
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
-const UPDATE_REQUEST_TIMEOUT_MS = 5000
+const UPDATE_REQUEST_TIMEOUT_MS = 15000
+const WINDOW_SHOW_FALLBACK_MS = 8000
+const UPDATE_RETRY_DELAYS_MS = [120000, 600000, 1800000]
 const UPDATE_STALL_TIMEOUT_MS = 30000
 const UPDATE_PROGRESS_INTERVAL_MS = 500
 const UPDATE_NOTES_LIMIT = 2000
@@ -151,6 +153,8 @@ let updateAsset = null
 let updateDownload = null
 let updateInstallerPath = ''
 let updateCheckTimer = null
+let updateRetryTimer = null
+let updateRetryIndex = 0
 let updateCheckInterval = null
 let emergencyShortcutActive = false
 let outputAccelerator = DEFAULT_OUTPUT_ACCELERATOR
@@ -418,6 +422,12 @@ function loadInterface() {
   }
 }
 
+function revealMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  if (!mainWindow.isVisible()) mainWindow.show()
+}
+
 function createMainWindow() {
   mainWindow = new BrowserWindow({
     width: 1600,
@@ -440,9 +450,8 @@ function createMainWindow() {
     mainWindow.setMenu(null)
   }
 
-  mainWindow.once('ready-to-show', () => {
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show()
-  })
+  mainWindow.once('ready-to-show', revealMainWindow)
+  setTimeout(revealMainWindow, WINDOW_SHOW_FALLBACK_MS)
 
   const contents = mainWindow.webContents
   contents.setWindowOpenHandler(() => ({ action: 'deny' }))
@@ -914,11 +923,24 @@ function fetchLatestRelease() {
   })
 }
 
+function scheduleUpdateRetry() {
+  if (!app.isPackaged || !readUpdateSettings().enabled) return
+  if (updateRetryTimer) clearTimeout(updateRetryTimer)
+  const delay = UPDATE_RETRY_DELAYS_MS[Math.min(updateRetryIndex, UPDATE_RETRY_DELAYS_MS.length - 1)]
+  updateRetryIndex += 1
+  updateRetryTimer = setTimeout(checkForUpdates, delay)
+}
+
 async function checkForUpdates() {
   const settings = readUpdateSettings()
   if (!settings.enabled || updateDownload || updateState.status === 'installing') return
   const release = await fetchLatestRelease()
-  if (!release || !isNewerVersion(release.version, app.getVersion())) return
+  if (!release) {
+    scheduleUpdateRetry()
+    return
+  }
+  updateRetryIndex = 0
+  if (!isNewerVersion(release.version, app.getVersion())) return
   if (settings.dismissed.includes(release.version)) return
   if (updateState.status === 'ready' && updateState.version === release.version) return
   if (settings.downloadedVersion && settings.downloadedVersion !== release.version) {
@@ -942,6 +964,10 @@ async function checkForUpdates() {
 }
 
 function clearUpdateTimers() {
+  if (updateRetryTimer) {
+    clearTimeout(updateRetryTimer)
+    updateRetryTimer = null
+  }
   if (updateCheckTimer) {
     clearTimeout(updateCheckTimer)
     updateCheckTimer = null

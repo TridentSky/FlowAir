@@ -1016,7 +1016,27 @@ const App = () => {
     try {
       const isOpen = await electron.ipcRenderer.invoke('is-output-window-open')
       const settings = outputSettingsRef.current
-      if (settings.externalOutputEnabled && settings.selectedDisplayId && !isOpen) {
+
+      if (!settings.externalOutputEnabled || !settings.selectedDisplayId) {
+        setOutputWindowActive(isOpen)
+        return
+      }
+
+      const displays = await electron.ipcRenderer.invoke('get-displays')
+      const available = Array.isArray(displays) && displays.some(display => display.id === settings.selectedDisplayId)
+
+      if (!available) {
+        setOutputSettings(prev => {
+          const updated = { ...prev, externalOutputEnabled: false }
+          localStorage.setItem('outputSettings', JSON.stringify(updated))
+          return updated
+        })
+        setOutputWindowActive(false)
+        addLog('The display used for the external output is not connected, output stays off', 'warning')
+        return
+      }
+
+      if (!isOpen) {
         electron.ipcRenderer.send('open-output-window', settings.selectedDisplayId)
         setOutputWindowActive(true)
       } else {
@@ -1024,7 +1044,7 @@ const App = () => {
       }
     } catch (error) {
     }
-  }, [])
+  }, [addLog])
 
   const refreshUpdateState = useCallback(async () => {
     const electron = getElectron()
@@ -3143,7 +3163,11 @@ const App = () => {
         if (electron) {
           electron.ipcRenderer.send('close-output-window')
           setOutputWindowActive(false)
-          setOutputSettings(prev => ({ ...prev, externalOutputEnabled: false }))
+          setOutputSettings(prev => {
+            const updated = { ...prev, externalOutputEnabled: false }
+            localStorage.setItem('outputSettings', JSON.stringify(updated))
+            return updated
+          })
           addLog('External output closed', 'info')
         }
         return
