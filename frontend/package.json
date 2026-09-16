@@ -1,10 +1,10 @@
 {
   "name": "flowair",
   "productName": "FlowAir",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Professional 24/7 broadcast playout system for Windows",
   "main": "src/main.js",
-  "author": "Trident Sky",
+  "author": "TridentSky",
   "license": "MIT",
   "private": true,
   "homepage": "https://github.com/TridentSky/FlowAir",
@@ -34,7 +34,7 @@
   "build": {
     "appId": "com.tridentsky.flowair",
     "productName": "FlowAir",
-    "copyright": "Copyright © 2026 Trident Sky",
+    "copyright": "Copyright © 2026 TridentSky",
     "artifactName": "FlowAir-Setup.${ext}",
     "directories": {
       "buildResources": "../build",
@@ -53,6 +53,13 @@
       {
         "from": "../ffmpeg/bin/ffprobe.exe",
         "to": "ffmpeg/ffprobe.exe"
+      }
+    ],
+    "fileAssociations": [
+      {
+        "ext": "flowair",
+        "name": "FlowAir.Playlist",
+        "description": "FlowAir Playlist"
       }
     ],
     "electronLanguages": [
