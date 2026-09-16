@@ -1,20 +1,21 @@
 import React from 'react'
+import Icon from './Icon'
 
 const ActivityLog = ({ collapsed, onToggle, logs = [] }) => {
   if (collapsed) {
     return (
-      <div style={styles.collapsedContainer} onClick={onToggle}>
+      <div style={styles.collapsedContainer} className="log-head" onClick={onToggle}>
         <span style={styles.collapsedText}>Activity Log (Click to expand)</span>
-        <span style={styles.collapsedIcon}>▲</span>
+        <span style={styles.chevron}><Icon name="chevron-up" size={14} /></span>
       </div>
     )
   }
 
   return (
     <div style={styles.container}>
-      <div style={styles.header} onClick={onToggle}>
+      <div style={styles.header} className="log-head" onClick={onToggle}>
         <span style={styles.title}>Activity Log</span>
-        <span style={styles.collapseIcon}>▼</span>
+        <span style={styles.chevron}><Icon name="chevron-down" size={14} /></span>
       </div>
 
       <div style={styles.logContainer}>
@@ -24,12 +25,12 @@ const ActivityLog = ({ collapsed, onToggle, logs = [] }) => {
           </div>
         ) : (
           logs.map((log, index) => (
-            <div key={index} style={styles.logEntry}>
+            <div key={log.id !== undefined ? log.id : index} style={styles.logEntry}>
               <span style={styles.logTime}>{log.time}</span>
               <span style={{
                 ...styles.logMessage,
-                color: log.type === 'error' ? '#ff7a7a' :
-                       log.type === 'warning' ? '#e0b341' :
+                color: log.type === 'error' ? 'var(--danger-text)' :
+                       log.type === 'warning' ? 'var(--warning)' :
                        log.type === 'playback' ? 'var(--accent)' :
                        'var(--text-secondary)'
               }}>
@@ -52,8 +53,8 @@ const styles = {
     flexDirection: 'column'
   },
   header: {
-    background: 'var(--bg-layer-2)',
     padding: '9px 20px',
+    minHeight: '34px',
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
@@ -67,8 +68,9 @@ const styles = {
     textTransform: 'uppercase',
     letterSpacing: '0.6px'
   },
-  collapseIcon: {
-    fontSize: '10px',
+  chevron: {
+    display: 'flex',
+    alignItems: 'center',
     color: 'var(--text-tertiary)'
   },
   logContainer: {
@@ -91,7 +93,8 @@ const styles = {
   },
   logMessage: {
     flex: 1,
-    fontFamily: 'var(--font-mono)'
+    fontFamily: 'var(--font-mono)',
+    userSelect: 'text'
   },
   emptyState: {
     display: 'flex',
@@ -104,8 +107,8 @@ const styles = {
     fontSize: '12px'
   },
   collapsedContainer: {
-    background: 'var(--bg-layer-2)',
     padding: '8px 20px',
+    minHeight: '34px',
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
@@ -116,10 +119,6 @@ const styles = {
     fontSize: '11px',
     color: 'var(--text-secondary)',
     fontWeight: '600'
-  },
-  collapsedIcon: {
-    fontSize: '10px',
-    color: 'var(--text-tertiary)'
   }
 }
 

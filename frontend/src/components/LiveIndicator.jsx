@@ -3,20 +3,36 @@ import React from 'react'
 const LiveIndicator = ({ isPlaying }) => {
   return (
     <div style={styles.container}>
-      {isPlaying && (
-        <>
-          <div style={styles.pulse} />
-          <div style={styles.dot} />
-        </>
-      )}
-      <span style={{
-        ...styles.text,
-        color: isPlaying ? 'var(--live)' : 'var(--text-tertiary)'
-      }}>
+      <div style={styles.dotBox}>
+        <div style={isPlaying ? styles.pulseOn : styles.pulseOff} />
+        <div style={isPlaying ? styles.dotOn : styles.dotOff} />
+      </div>
+      <span style={isPlaying ? styles.textOn : styles.textOff}>
         {isPlaying ? 'ON AIR' : 'OFF AIR'}
       </span>
     </div>
   )
+}
+
+const dotBase = {
+  position: 'absolute',
+  top: 0,
+  left: 0,
+  width: '11px',
+  height: '11px',
+  borderRadius: '50%'
+}
+
+const textBase = {
+  width: '68px',
+  display: 'inline-block',
+  textAlign: 'left',
+  fontFamily: 'var(--font-display)',
+  fontSize: '13px',
+  fontWeight: '700',
+  letterSpacing: '1px',
+  fontVariantNumeric: 'tabular-nums',
+  transition: 'color 0.14s ease'
 }
 
 const styles = {
@@ -24,29 +40,45 @@ const styles = {
     display: 'flex',
     alignItems: 'center',
     gap: '10px',
-    position: 'relative'
+    minWidth: '92px',
+    flexShrink: 0,
+    justifyContent: 'flex-start'
   },
-  dot: {
+  dotBox: {
+    position: 'relative',
     width: '11px',
     height: '11px',
-    borderRadius: '50%',
+    flexShrink: 0
+  },
+  dotOn: {
+    ...dotBase,
     background: 'var(--live)',
     boxShadow: '0 0 10px var(--live)'
   },
-  pulse: {
-    position: 'absolute',
-    left: '0',
-    width: '11px',
-    height: '11px',
-    borderRadius: '50%',
+  dotOff: {
+    ...dotBase,
+    background: 'var(--text-quaternary)',
+    boxShadow: 'none'
+  },
+  pulseOn: {
+    ...dotBase,
     background: 'var(--live)',
     animation: 'pulse 1.5s infinite',
     opacity: 0.6
   },
-  text: {
-    fontSize: '13px',
-    fontWeight: '700',
-    letterSpacing: '1px'
+  pulseOff: {
+    ...dotBase,
+    background: 'var(--live)',
+    animation: 'none',
+    opacity: 0
+  },
+  textOn: {
+    ...textBase,
+    color: 'var(--live)'
+  },
+  textOff: {
+    ...textBase,
+    color: 'var(--text-tertiary)'
   }
 }
 
