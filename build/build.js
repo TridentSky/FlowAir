@@ -11,17 +11,20 @@ const stagingDir = path.join(rootDir, '.build')
 const installerDir = path.join(rootDir, 'Installer')
 const ffprobePath = path.join(rootDir, 'ffmpeg', 'bin', 'ffprobe.exe')
 const ffmpegPath = path.join(rootDir, 'ffmpeg', 'bin', 'ffmpeg.exe')
+const ffmpegLicensePath = path.join(__dirname, 'ffmpeg-license.txt')
 const iconPath = path.join(__dirname, 'icon.ico')
 const venvPython = path.join(backendDir, 'venv', 'Scripts', 'python.exe')
 const taskkillPath = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe')
 const pyinstallerVersion = '6.22.3'
 const minimumPython = [3, 11]
 const artifactName = 'FlowAir-Setup.exe'
-const installerResources = ['icon.ico', 'installer.nsh', 'installerHeader.bmp', 'installerSidebar.bmp']
+const installerResources = ['icon.ico', 'installer.nsh', 'installerHeader.bmp', 'installerSidebar.bmp', 'ffmpeg-license.txt']
 const packagedAppEntries = [
   'FlowAir.exe',
   path.join('resources', 'backend', 'flowair-backend.exe'),
-  path.join('resources', 'ffmpeg', 'ffprobe.exe')
+  path.join('resources', 'ffmpeg', 'ffprobe.exe'),
+  path.join('resources', 'ffmpeg', 'ffmpeg.exe'),
+  path.join('resources', 'ffmpeg', 'LICENSE.txt')
 ]
 const packagedAppBundles = [path.join('resources', 'app.asar'), path.join('resources', 'app', 'package.json')]
 const version = JSON.parse(fs.readFileSync(path.join(frontendDir, 'package.json'), 'utf-8')).version
@@ -115,12 +118,18 @@ function requestJson(method, route, payload) {
 function requestRange(route, range) {
   return new Promise(resolve => {
     const request = http.get({ host: '127.0.0.1', port: 8000, path: route, timeout: 20000, headers: { Range: range } })
-    const gate = guardRequest(request, resolve, 25000, error => ({ status: null, contentRange: error.message, received: 0 }))
+    const gate = guardRequest(request, resolve, 25000, error => ({ status: null, contentRange: error.message, received: 0, head: Buffer.alloc(0) }))
     request.on('response', response => {
       gate.watch(response)
       let received = 0
-      response.on('data', chunk => { received += chunk.length })
-      response.on('end', () => gate.complete({ status: response.statusCode, contentRange: response.headers['content-range'] || '', received }))
+      let head = Buffer.alloc(0)
+      response.on('data', chunk => {
+        received += chunk.length
+        if (head.length < 16) {
+          head = Buffer.concat([head, chunk]).subarray(0, 16)
+        }
+      })
+      response.on('end', () => gate.complete({ status: response.statusCode, contentRange: response.headers['content-range'] || '', received, head }))
     })
   })
 }
@@ -251,46 +260,60 @@ function verifyRuntimeLibraries(engineDir) {
   }
 }
 
-const probeClipEncoders = [
-  ['-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p'],
+const clipEncoders = [
+  ['-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-bf', '0'],
   ['-c:v', 'libopenh264', '-pix_fmt', 'yuv420p'],
-  ['-c:v', 'mpeg4', '-pix_fmt', 'yuv420p']
+  ['-c:v', 'h264_mf', '-pix_fmt', 'nv12']
 ]
 
-function createProbeClip(targetDir) {
-  if (!fs.existsSync(ffmpegPath)) {
-    warn(`ffmpeg.exe was not found at ${ffmpegPath}, so the media pipeline of the packaged playout engine was NOT verified. Only ffprobe.exe is shipped, so the installer is still valid, but ffprobe and range streaming were not exercised.`)
-    return null
-  }
-
-  fs.mkdirSync(targetDir, { recursive: true })
-  const clip = path.join(targetDir, 'flowair-build-check.mp4')
-  const failures = []
-
-  for (const encoder of probeClipEncoders) {
+function verifyMediaTools() {
+  for (const tool of [ffprobePath, ffmpegPath]) {
+    if (!fs.existsSync(tool) || fs.statSync(tool).size === 0) {
+      throw new Error(`${path.basename(tool)} was not found at ${tool}. FlowAir ships both ffprobe.exe and ffmpeg.exe.`)
+    }
     try {
-      fs.rmSync(clip, { force: true })
-      execFileSync(ffmpegPath, [
-        '-hide_banner',
-        '-loglevel', 'error',
-        '-y',
-        '-f', 'lavfi',
-        '-i', 'color=c=black:s=320x240:r=25:d=1',
-        ...encoder,
-        clip
-      ], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true })
+      execFileSync(tool, ['-hide_banner', '-version'], { stdio: 'ignore', windowsHide: true, timeout: 30000 })
     } catch (error) {
-      failures.push(`${encoder[1]} - ${error.stderr ? error.stderr.toString().trim() : error.message}`)
+      throw new Error(`${path.basename(tool)} at ${tool} does not run: ${error.message}`)
+    }
+  }
+  if (!fs.existsSync(ffmpegLicensePath) || !fs.readFileSync(ffmpegLicensePath, 'utf-8').includes('GNU GENERAL PUBLIC LICENSE')) {
+    throw new Error(`The FFmpeg licence and source notice was not found at ${ffmpegLicensePath}. It must ship next to ffmpeg.exe.`)
+  }
+}
+
+function createClip(target, sources, extraArgs) {
+  const failures = []
+  for (const encoder of clipEncoders) {
+    try {
+      fs.rmSync(target, { force: true })
+      execFileSync(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-y', ...sources, ...encoder, ...extraArgs, target], {
+        stdio: ['ignore', 'ignore', 'pipe'],
+        windowsHide: true,
+        timeout: 60000
+      })
+    } catch (error) {
+      failures.push(`${encoder[1]} - ${error.stderr && error.stderr.length ? error.stderr.toString().trim() : error.message}`)
       continue
     }
-    if (fs.existsSync(clip) && fs.statSync(clip).size >= 2048) {
-      return clip
+    if (fs.existsSync(target) && fs.statSync(target).size >= 2048) {
+      return target
     }
     failures.push(`${encoder[1]} - the clip was empty or too small to exercise a range request`)
   }
+  throw new Error(`The bundled ffmpeg could not create the build check clip ${path.basename(target)}: ${failures.join(' | ')}`)
+}
 
-  warn(`No encoder in this ffmpeg build could create the build check clip, so the media pipeline of the packaged playout engine was NOT verified: ${failures.join(' | ')}`)
-  return null
+function createProbeClips(targetDir) {
+  fs.mkdirSync(targetDir, { recursive: true })
+  const playable = createClip(path.join(targetDir, 'flowair-build-check.mp4'), [
+    '-f', 'lavfi', '-i', 'color=c=black:s=320x240:r=25:d=1'
+  ], [])
+  const convertible = createClip(path.join(targetDir, 'flowair-build-check.avi'), [
+    '-f', 'lavfi', '-i', 'testsrc2=s=320x240:r=25:d=2',
+    '-f', 'lavfi', '-i', 'sine=frequency=1000:sample_rate=48000:duration=2'
+  ], ['-map', '0:v', '-map', '1:a', '-c:a', 'libmp3lame', '-b:a', '128k', '-shortest'])
+  return { playable, convertible }
 }
 
 async function checkWorkerThreads() {
@@ -321,49 +344,115 @@ async function checkOBSDependencies() {
   }
 }
 
-async function checkMediaPipeline(clip) {
+function parseJson(body, description) {
+  try {
+    return JSON.parse(body)
+  } catch (error) {
+    throw new Error(`The packaged playout engine returned an unreadable ${description}: ${body}`)
+  }
+}
+
+async function addClip(clip) {
   const added = await requestJson('POST', '/playlist/add', { filepath: clip })
   if (added.status !== 200) {
-    throw new Error(`The packaged playout engine refused the build check clip (${added.status}): ${added.body}`)
+    throw new Error(`The packaged playout engine refused the build check clip ${path.basename(clip)} (${added.status}): ${added.body}`)
   }
-
-  let itemId = null
-  try {
-    itemId = JSON.parse(added.body).item.id
-  } catch (error) {
+  const item = parseJson(added.body, 'playlist item').item
+  if (!item || !item.id) {
     throw new Error(`The packaged playout engine returned an unreadable playlist item: ${added.body}`)
   }
+  return item.id
+}
 
-  let validated = null
-  const deadline = Date.now() + 45000
+async function waitForItem(itemId, isReady, timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+  let item = null
   while (Date.now() < deadline) {
     const listed = await requestJson('GET', '/playlist')
     if (listed.status !== 200) {
       throw new Error(`The packaged playout engine could not return its playlist (${listed.status}): ${listed.body}`)
     }
-    let item = null
-    try {
-      item = JSON.parse(listed.body).playlist.find(entry => entry.id === itemId)
-    } catch (error) {
-      throw new Error(`The packaged playout engine returned an unreadable playlist: ${listed.body}`)
-    }
-    if (item && item.status !== 'validating') {
-      validated = item
-      break
+    const playlist = parseJson(listed.body, 'playlist').playlist
+    item = Array.isArray(playlist) ? playlist.find(entry => entry.id === itemId) || null : null
+    if (item && isReady(item)) {
+      return { item, ready: true }
     }
     await delay(250)
   }
+  return { item, ready: false }
+}
 
-  if (validated === null) {
-    throw new Error('The packaged playout engine never finished validating the build check clip')
-  }
-  if (validated.status !== 'normal' || !(validated.duration > 0)) {
-    throw new Error(`ffprobe does not work inside the packaged playout engine (status ${validated.status}, duration ${validated.duration})`)
-  }
-
+async function checkRange(itemId, description) {
   const ranged = await requestRange(`/stream/${itemId}`, 'bytes=0-1023')
   if (ranged.status !== 206 || ranged.received !== 1024 || !ranged.contentRange.startsWith('bytes 0-1023/')) {
-    throw new Error(`The packaged playout engine failed the range request check (status ${ranged.status}, ${ranged.received} bytes, content-range "${ranged.contentRange}")`)
+    throw new Error(`The packaged playout engine failed the range request check for the ${description} (status ${ranged.status}, ${ranged.received} bytes, content-range "${ranged.contentRange}")`)
+  }
+  if (ranged.head.subarray(4, 8).toString('latin1') !== 'ftyp') {
+    throw new Error(`The packaged playout engine did not stream an MP4 file for the ${description} (first bytes ${ranged.head.toString('hex')})`)
+  }
+}
+
+async function checkMediaPipeline(clip) {
+  const itemId = await addClip(clip)
+  const { item, ready } = await waitForItem(itemId, entry => entry.status !== 'validating', 45000)
+  if (!ready) {
+    throw new Error('The packaged playout engine never finished validating the build check clip')
+  }
+  if (item.status !== 'normal' || !(item.duration > 0)) {
+    throw new Error(`ffprobe does not work inside the packaged playout engine (status ${item.status}, duration ${item.duration})`)
+  }
+  const conversion = item.conversion || {}
+  if (conversion.plan !== 'none' || conversion.status !== 'none') {
+    throw new Error(`The packaged playout engine wants to convert a clip that already plays (plan ${conversion.plan}, status ${conversion.status})`)
+  }
+  await checkRange(itemId, 'playable clip')
+}
+
+async function checkConversionPipeline(clip, cacheDir) {
+  const itemId = await addClip(clip)
+  const validated = await waitForItem(itemId, entry => entry.status !== 'validating', 45000)
+  if (!validated.ready) {
+    throw new Error('The packaged playout engine never finished validating the AVI build check clip')
+  }
+  if (validated.item.status !== 'normal' || !(validated.item.duration > 0)) {
+    throw new Error(`ffprobe does not read the AVI build check clip inside the packaged playout engine (status ${validated.item.status}, duration ${validated.item.duration})`)
+  }
+  const sourceDuration = validated.item.duration
+  const plan = (validated.item.conversion || {}).plan
+  if (plan !== 'remux') {
+    throw new Error(`The packaged playout engine chose the conversion plan "${plan}" for an H.264 AVI instead of "remux"`)
+  }
+
+  const finished = ['done', 'failed', 'cancelled']
+  const converted = await waitForItem(itemId, entry => finished.includes((entry.conversion || {}).status), 120000)
+  const conversion = (converted.item && converted.item.conversion) || {}
+  if (!converted.ready) {
+    throw new Error(`The packaged playout engine did not finish converting the AVI build check clip in time (status ${conversion.status}, progress ${conversion.progress})`)
+  }
+  if (conversion.status !== 'done') {
+    throw new Error(`The packaged playout engine could not convert the AVI build check clip (status ${conversion.status}): ${conversion.error || 'no error reported'}`)
+  }
+  if (converted.item.playability !== 'ok') {
+    throw new Error(`The converted AVI build check clip is not marked playable (playability ${converted.item.playability})`)
+  }
+  if (!(Math.abs(converted.item.duration - sourceDuration) <= 0.1)) {
+    throw new Error(`The converted AVI build check clip changed duration (${sourceDuration}s became ${converted.item.duration}s)`)
+  }
+
+  await checkRange(itemId, 'converted AVI clip')
+
+  const status = await requestJson('GET', '/conversion/status')
+  if (status.status !== 200) {
+    throw new Error(`The packaged playout engine could not report its conversion status (${status.status}): ${status.body}`)
+  }
+  const report = parseJson(status.body, 'conversion status')
+  if (typeof report.encoder !== 'string' || !Array.isArray(report.queue)) {
+    throw new Error(`The packaged playout engine returned an incomplete conversion status: ${status.body}`)
+  }
+
+  const cached = fs.existsSync(cacheDir) ? fs.readdirSync(cacheDir).map(name => name.toLowerCase()) : []
+  if (!cached.some(name => name.endsWith('.mp4') && !name.includes('.partial'))) {
+    throw new Error(`The converted AVI build check clip was not written to the media cache (${cacheDir})`)
   }
 }
 
@@ -375,10 +464,18 @@ async function verifyEngine(executable) {
   log('Verifying packaged playout engine')
   const checkDir = path.join(stagingDir, 'check')
   removeDir(checkDir)
-  const clip = createProbeClip(checkDir)
+  const clips = createProbeClips(checkDir)
+  const cacheDir = path.join(checkDir, 'media-cache')
+  fs.mkdirSync(cacheDir, { recursive: true })
   const child = spawn(executable, [], {
     cwd: path.dirname(executable),
-    env: { ...process.env, FLOWAIR_FFMPEG_DIR: path.dirname(ffprobePath), FLOWAIR_INSTANCE: 'build-check', FLOWAIR_PARENT_PID: String(process.pid) },
+    env: {
+      ...process.env,
+      FLOWAIR_FFMPEG_DIR: path.dirname(ffprobePath),
+      FLOWAIR_CACHE_DIR: cacheDir,
+      FLOWAIR_INSTANCE: 'build-check',
+      FLOWAIR_PARENT_PID: String(process.pid)
+    },
     windowsHide: true,
     stdio: 'ignore'
   })
@@ -391,9 +488,8 @@ async function verifyEngine(executable) {
         await checkWorkerThreads()
         await checkWebSocketUpgrade()
         await checkOBSDependencies()
-        if (clip !== null) {
-          await checkMediaPipeline(clip)
-        }
+        await checkMediaPipeline(clips.playable)
+        await checkConversionPipeline(clips.convertible, cacheDir)
         return
       }
       if (child.exitCode !== null) break
@@ -409,9 +505,13 @@ async function verifyEngine(executable) {
     while (Date.now() < releaseDeadline && await probeEngine() !== null) {
       await delay(300)
     }
-    try {
-      removeDir(checkDir)
-    } catch (error) {
+    const cleanupDeadline = Date.now() + 10000
+    while (fs.existsSync(checkDir) && Date.now() < cleanupDeadline) {
+      try {
+        removeDir(checkDir)
+      } catch (error) {
+        await delay(300)
+      }
     }
   }
 }
@@ -462,9 +562,7 @@ async function main() {
   if (process.platform !== 'win32') {
     throw new Error('The FlowAir installer must be built on Windows')
   }
-  if (!fs.existsSync(ffprobePath)) {
-    throw new Error(`ffprobe.exe was not found at ${ffprobePath}`)
-  }
+  verifyMediaTools()
   if (!fs.existsSync(path.join(frontendDir, 'node_modules', 'electron-builder'))) {
     throw new Error('Run "npm install" inside the frontend folder first')
   }

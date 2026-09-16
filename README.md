@@ -11,7 +11,8 @@ Professional 24/7 broadcast playout for Windows. Build a playlist of videos and 
 - **Event rows** — STOP events to hold the channel, notes for the operator, and OBS events to switch scenes or show/hide sources
 - **Full-screen output** on any connected display, with a selectable audio output device, plus a browser player for OBS or other computers on your network
 - **Live controls** — output volume and timeline scrubbing behind an edit-mode safety lock
-- **File checks** — missing or corrupt files are marked red and skipped, and files the player cannot decode are flagged before they go on air
+- **File checks** — missing or corrupt files are marked red and skipped before they go on air
+- **Plays almost any video** — AVI, MKV, TS, HEVC and other formats the player cannot open are converted to MP4 in the background, using the GPU when there is one
 - **Session recovery** — after a crash or power cut FlowAir offers to restore the last playlist
 - **Built for the keyboard** — the playout shortcuts can be reassigned in Settings, and every confirmation is driven with `Enter` and `Esc`
 - **In-app updates** — FlowAir tells you when a new version exists and downloads the installer for you
@@ -56,7 +57,7 @@ A real uninstall removes:
 - the program folder and both shortcuts
 - the *FlowAir Engine* firewall rule
 - the `.flowair` file association and every registry key FlowAir wrote
-- your settings and cached data — `%APPDATA%\FlowAir` and `%LOCALAPPDATA%\FlowAir` — which includes the recovered session, the OBS password and your keyboard shortcuts
+- your settings and cached data — `%APPDATA%\FlowAir` and `%LOCALAPPDATA%\FlowAir` — which includes the recovered session, the OBS password, your keyboard shortcuts and the converted video cache
 
 Your saved `.flowair` playlists and your media files are never touched. An upgrade removes none of this; only a real uninstall does.
 
@@ -115,27 +116,39 @@ These are the defaults. **Settings > Shortcuts** lets you reassign every action 
 
 Every confirmation dialog is driven from the keyboard: `Enter` confirms, `Esc` cancels, `Tab` stays inside the dialog, and the safe choice is always the one already selected.
 
-## Media compatibility
+## Video compatibility
 
-FlowAir plays media through the same engine as Chrome, so what it can decode is fixed. These play everywhere, with no extra software:
+FlowAir plays video through the same engine as Chrome. Files it can decode play directly from where they are, exactly as before; FlowAir never converts them.
 
-| | Plays natively |
+| | Plays directly |
 | --- | --- |
 | Containers | `.mp4`, `.mov`, `.m4v`, `.webm` |
 | Video | H.264, VP8, VP9, AV1 |
-| Audio | AAC, MP3, Opus, Vorbis, FLAC, PCM |
+| Audio | AAC, MP3, Opus, Vorbis, FLAC |
 | Images | `.jpg`, `.png`, `.bmp`, `.webp`, `.gif` |
 
-`.mkv` is accepted, but it is *always* flagged amber: Matroska only says how the file is wrapped, not what is inside it, so play the clip once before you schedule it.
+Everything else is converted automatically to an MP4 (H.264 + AAC) when you add it. While a file is being prepared its row shows **Preparing** with the progress, and playout skips it, so the channel never goes black waiting for it. There are three kinds of conversion:
 
-Anything else is checked when you add it and the row is marked:
+| What the file has | What FlowAir does | How long it takes |
+| --- | --- | --- |
+| Playable video and audio in a container the player cannot open (for example H.264 in `.avi`, `.mkv` or `.ts`) | Rewraps the streams into MP4 without re-encoding | Seconds |
+| Playable video with unplayable audio (AC-3, E-AC-3, DTS, PCM in MP4...) | Copies the video and converts only the audio | Fast, a small fraction of the clip length |
+| Video the player cannot decode (HEVC/H.265, MPEG-2, VC-1, DivX/Xvid, ProRes...) | Re-encodes the video to H.264 | Depends on the machine: FlowAir uses the GPU encoder when there is one (Intel Quick Sync, NVIDIA NVENC, AMD AMF) and falls back to the processor |
 
-- **Amber warning** — the item will load, but something is missing or cannot be guaranteed. Every `.mkv` is flagged for this reason; H.265/HEVC needs the *HEVC Video Extensions* from the Microsoft Store and a GPU that can decode it; AC-3 or E-AC-3 audio plays as silence. Hover the row to read the reason.
-- **Red** — the item cannot be played at all: an AVI, WMV, FLV or MPEG program stream (`.mpg`, `.mpeg`) container, a TIFF image (`.tiff`, `.tif`), or a file that is missing or corrupt. Convert video to MP4 with H.264 and AAC, and stills to PNG or JPEG, before air.
+The first two run on their own. A full re-encode is heavy, so by default the row offers **Convert** (right-click) and you choose when to run it; **Settings > Compatibility** can make it automatic, shows the encoder FlowAir detected and lets you cancel or clear conversions. Conversions run one at a time at low priority.
 
-Files whose extension is not on this list never reach the playlist at all — they are refused with *Unsupported file format* the moment you add them. Video: `.mp4` `.m4v` `.mov` `.mkv` `.webm` `.avi` `.wmv` `.flv` `.mpeg` `.mpg`. Images: `.jpg` `.jpeg` `.png` `.bmp` `.webp` `.gif` `.tiff` `.tif`. Transport streams (`.ts`), MXF and anything else must be converted first.
+A converted file keeps the resolution, the frame rate (25, 29.97, 50, 59.94, 60, 120 fps or variable) and the duration of the original, so scheduling and start times are the same as for any other clip. The original file is never modified.
 
-For unattended 24/7 playout, keep every clip in the same profile: MP4, H.264, AAC, 1080p.
+Converted copies are kept in `%LOCALAPPDATA%\FlowAir\media-cache`, so a file is only converted once, even if you duplicate the row or load the playlist again. The cache is limited in size and drops the oldest copies no playlist uses; **Clear cache** in **Settings > Compatibility** empties it by hand. Uninstalling FlowAir removes the cache; upgrading keeps it.
+
+Rows are still marked when something needs your attention:
+
+- **Amber warning** — the item plays, but something cannot be guaranteed. Hover the row to read the reason.
+- **Red** — the item cannot be played: the file is missing or corrupt, a conversion failed, or it is a TIFF image (`.tiff`, `.tif`). Convert stills to PNG or JPEG before air.
+
+Accepted files — video: `.mp4` `.m4v` `.mov` `.mkv` `.webm` `.avi` `.wmv` `.flv` `.mpeg` `.mpg` `.ts` `.m2ts` `.mts` `.mxf` `.3gp` `.3g2` `.asf` `.f4v` `.vob` `.divx` `.dv` `.ogv`; images: `.jpg` `.jpeg` `.png` `.bmp` `.webp` `.gif` `.tiff` `.tif`. Anything else is refused with *Unsupported file format*.
+
+For unattended 24/7 playout, MP4 with H.264 and AAC is still the best profile: it plays immediately with no preparation.
 
 ## Troubleshooting
 
@@ -143,14 +156,14 @@ For unattended 24/7 playout, keep every clip in the same profile: MP4, H.264, AA
 - **"The FlowAir playout engine could not start"** — an antivirus may have blocked `flowair-backend.exe`, or the engine was simply too slow on a cold first start after installing. Open FlowAir again; if it fails a second time, restore the file or add an exception for the FlowAir folder, then reinstall.
 - **"FlowAir is already running."** — another Windows user session on this computer owns the playout engine. Sign that session out, or use the same account.
 - **"The FlowAir playout engine stopped several times..."** — close FlowAir, open it again, and reinstall if it keeps happening.
-- **Black video** — the file uses a codec Windows cannot decode (usually HEVC). See *Media compatibility* above.
+- **A row stays on Preparing or turns red after converting** — hover it to read the reason and see *Video compatibility* above. Right-click > **Convert** tries again.
 - **The full-screen output closed by itself** — its display was disconnected. Reconnect it and apply the Output settings again.
 - **A network player shows "Access denied"** — turn on *Network Streaming* in **Settings > Network** on the FlowAir computer. Only the player is shared; the playlist can only be controlled from the FlowAir computer.
 - **A network player never connects** — the *FlowAir Engine* firewall rule is missing or was blocked by policy. Re-run the installer, or add an inbound rule for `resources\backend\flowair-backend.exe`.
 
 ## Build from source
 
-You need [Node.js](https://nodejs.org) 18 or newer, [Python](https://www.python.org) 3.11 or newer, and `ffprobe.exe` plus `ffmpeg.exe` from an [FFmpeg build](https://github.com/BtbN/FFmpeg-Builds/releases) placed in `ffmpeg/bin/`. Only `ffprobe.exe` is shipped; `ffmpeg.exe` is used during the build to create the clip the packaged engine is tested with.
+You need [Node.js](https://nodejs.org) 18 or newer, [Python](https://www.python.org) 3.11 or newer, and `ffprobe.exe` plus `ffmpeg.exe` from the [gyan.dev FFmpeg 8.0.1 essentials build](https://www.gyan.dev/ffmpeg/builds/) placed in `ffmpeg/bin/`. If you use a different build, update `build/ffmpeg-license.txt` to match it. Both are shipped with the installer: `ffprobe.exe` checks media and `ffmpeg.exe` converts it.
 
 Run in development mode (installs dependencies on first run):
 
@@ -166,7 +179,7 @@ npm install
 npm run dist
 ```
 
-Port 8000 must be free while building: the packaged engine is started and checked before the installer is created. The build also refuses to continue if an installer resource is missing from `build/`, or if the packaged application does not contain the app, the engine and `ffprobe.exe`. The installer is written to `Installer/FlowAir-Setup.exe`.
+Port 8000 must be free while building: the packaged engine is started and checked before the installer is created, including a real conversion of a generated AVI clip. The build also refuses to continue if `ffprobe.exe` or `ffmpeg.exe` is missing, if an installer resource or the FFmpeg licence notice is missing from `build/`, or if the packaged application does not contain the app, the engine, `ffprobe.exe`, `ffmpeg.exe` and the FFmpeg licence. The installer is written to `Installer/FlowAir-Setup.exe`.
 
 ### Project structure
 
@@ -183,7 +196,7 @@ FlowAir/
 
 - [Electron](https://www.electronjs.org) and [React](https://react.dev) — desktop app
 - [FastAPI](https://fastapi.tiangolo.com) and [Uvicorn](https://www.uvicorn.org) — playout engine
-- [FFmpeg](https://ffmpeg.org) (ffprobe) — media validation ([LGPL/GPL](https://ffmpeg.org/legal.html))
+- [FFmpeg](https://ffmpeg.org) (ffprobe and ffmpeg) — media validation and conversion ([GPL](https://ffmpeg.org/legal.html))
 - [obsws-python](https://github.com/aatikturk/obsws-python) — OBS WebSocket control
 - Developed with [Claude Code](https://claude.com/claude-code)
 
@@ -191,4 +204,4 @@ FlowAir/
 
 MIT License — see [LICENSE](LICENSE) for details.
 
-FFmpeg is an independent project with its own license.
+FFmpeg is an independent project with its own license. The installer ships the gyan.dev FFmpeg 8.0.1 essentials build, which includes GPL components such as libx264, so `ffmpeg.exe` and `ffprobe.exe` are distributed under the GNU GPL version 3 or later. The full licence text and the source code notice are installed next to them as `resources/ffmpeg/LICENSE.txt` (kept in the repository as `build/ffmpeg-license.txt`). FFmpeg source code: [ffmpeg.org/download.html](https://ffmpeg.org/download.html) and [github.com/FFmpeg/FFmpeg](https://github.com/FFmpeg/FFmpeg). Build details: [gyan.dev/ffmpeg/builds](https://www.gyan.dev/ffmpeg/builds/).

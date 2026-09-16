@@ -1,7 +1,7 @@
 {
   "name": "flowair",
   "productName": "FlowAir",
-  "version": "2.2.2",
+  "version": "2.3.0",
   "description": "Professional 24/7 broadcast playout system for Windows",
   "main": "src/main.js",
   "author": "TridentSky",
@@ -53,6 +53,14 @@
       {
         "from": "../ffmpeg/bin/ffprobe.exe",
         "to": "ffmpeg/ffprobe.exe"
+      },
+      {
+        "from": "../ffmpeg/bin/ffmpeg.exe",
+        "to": "ffmpeg/ffmpeg.exe"
+      },
+      {
+        "from": "../build/ffmpeg-license.txt",
+        "to": "ffmpeg/LICENSE.txt"
       }
     ],
     "fileAssociations": [

@@ -5,6 +5,8 @@ Var pid
 
 !define FLOWAIR_ENGINE_EXECUTABLE "flowair-backend.exe"
 !define FLOWAIR_ENGINE_PATH "resources\backend\flowair-backend.exe"
+!define FLOWAIR_ENGINE_RELATIVE_TO_RESOURCES "backend\flowair-backend.exe"
+!define FLOWAIR_CONVERTER_EXECUTABLE "ffmpeg.exe"
 !define FLOWAIR_FIREWALL_RULE "FlowAir Engine"
 !define FLOWAIR_LEGACY_FIREWALL_RULE "FlowAir Backend"
 !define FLOWAIR_FILE_CLASS "FlowAir.Playlist"
@@ -48,6 +50,8 @@ Var pid
     ${endIf}
     Sleep 250
   ${Loop}
+  nsExec::Exec `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process | Where-Object { $$_.Name -eq '${FLOWAIR_CONVERTER_EXECUTABLE}' -and $$_.ExecutablePath -and (Test-Path -LiteralPath (Join-Path (Split-Path (Split-Path $$_.ExecutablePath)) '${FLOWAIR_ENGINE_RELATIVE_TO_RESOURCES}')) } | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force }"`
+  Pop $0
   Pop $2
   Pop $1
   Pop $0
