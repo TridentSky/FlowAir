@@ -1,9 +1,9 @@
 import os
-import gc
 import time
 from datetime import datetime, timedelta
 from file_validator import FileValidator
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 
 
@@ -27,7 +27,6 @@ class PlaylistManager:
         self.force_timing_thread = None
         self.next_lock = threading.Lock()
         self.last_next_time = None
-        self.validation_threads = []
         self.absolute_schedule = {}
         self.playlist_start_time = None
         self.validation_cache = {}
@@ -35,13 +34,26 @@ class PlaylistManager:
         self.active_validations = set()
         self.validation_condition = threading.Condition()
         self.validation_completed = False
-        self.validation_semaphore = threading.Semaphore(5)
+        self.validation_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="flowair-validate")
+        self.last_validation_at = time.monotonic()
+        self.revision = 0
         self.on_playback_change = None
         self.on_obs_event = None
         self.output_volume = 100
         self.clear_playlist_on_startup()
         self._start_cleanup_thread()
         self._start_force_timing_thread()
+
+    def _bump_revision(self):
+        self.revision += 1
+
+    @staticmethod
+    def file_signature(filepath):
+        try:
+            stat = os.stat(filepath)
+            return f"{stat.st_mtime_ns}:{stat.st_size}"
+        except OSError:
+            return ""
 
     def add_item(self, filepath, insert_index=None, loop=False):
         was_empty = len(self.playlist) == 0
@@ -59,15 +71,17 @@ class PlaylistManager:
             "loop": bool(loop),
             "file_size": None,
             "format": None,
-            "bitrate": None
+            "bitrate": None,
+            "playability": "ok",
+            "issues": [],
+            "file_signature": ""
         }
 
         self.next_id += 1
         self._insert_item(item, insert_index)
+        self._bump_revision()
 
-        validation_thread = threading.Thread(target=self._validate_item_async, args=(item,), daemon=True)
-        validation_thread.start()
-        self.validation_threads.append(validation_thread)
+        self.validation_executor.submit(self._validate_item_async, item)
 
         if was_empty and self.current_index == -1:
             self.current_index = 0
@@ -80,6 +94,114 @@ class PlaylistManager:
             self._calculate_absolute_schedule()
         self.recalculate_start_times()
         return item
+
+    def duplicate_item(self, item_id, insert_index=None):
+        source = None
+        for item in self.playlist:
+            if item["id"] == item_id:
+                source = item
+                break
+
+        if source is None or source["type"] not in ["video", "image"]:
+            return None
+
+        item = dict(source)
+        item["id"] = self.next_id
+        item["start_time"] = None
+        item["issues"] = list(source.get("issues") or [])
+        item.pop("cue_timestamp", None)
+
+        self.next_id += 1
+        self._insert_item(item, insert_index)
+        self._bump_revision()
+
+        if item.get("status") == "validating":
+            self.validation_executor.submit(self._validate_item_async, item)
+
+        if self.is_playing:
+            self.absolute_schedule = {}
+            self._calculate_absolute_schedule()
+        self.recalculate_start_times()
+        return item
+
+    def _build_restored_item(self, data):
+        item_type = data.get("type")
+        if item_type not in ["video", "image", "stop", "note", "obs"]:
+            return None
+
+        item = {
+            "id": self.next_id,
+            "name": data.get("name") or "",
+            "location": data.get("location"),
+            "type": item_type,
+            "duration": data.get("duration"),
+            "duration_formatted": data.get("duration_formatted"),
+            "status": "normal",
+            "resolution": data.get("resolution"),
+            "start_time": None,
+            "playability": data.get("playability", "ok"),
+            "issues": list(data.get("issues") or []),
+            "file_signature": ""
+        }
+
+        if item_type in ["video", "image"]:
+            if not item["location"]:
+                return None
+            item["loop"] = bool(data.get("loop", False))
+            item["file_size"] = data.get("file_size")
+            item["format"] = data.get("format")
+            item["bitrate"] = data.get("bitrate")
+            item["status"] = "validating"
+            item["duration_formatted"] = data.get("duration_formatted") or "Validating..."
+        elif item_type == "note":
+            item["name"] = "NOTE"
+            item["note"] = data.get("note", "")
+        elif item_type == "obs":
+            item["name"] = "OBS EVENT"
+            item["obs_scene"] = data.get("obs_scene", "")
+            item["obs_source"] = data.get("obs_source", "")
+            item["obs_action"] = data.get("obs_action", "show")
+            item["obs_transition"] = data.get("obs_transition", "")
+            item["obs_transition_duration"] = data.get("obs_transition_duration", 0)
+        else:
+            item["name"] = "STOP EVENT"
+
+        self.next_id += 1
+        return item
+
+    def restore_items(self, items, position=None):
+        created = []
+        index = position
+
+        for data in items:
+            item = self._build_restored_item(data)
+            if item is None:
+                continue
+
+            self._insert_item(item, index)
+            created.append(item)
+
+            if index is not None:
+                index = min(index + 1, len(self.playlist))
+            if item["type"] in ["video", "image"]:
+                self.validation_executor.submit(self._validate_item_async, item)
+
+        if not created:
+            return []
+
+        self._bump_revision()
+
+        if self.current_index == -1 and self.playlist:
+            self.current_index = 0
+            self.current_video_start_time = datetime.now()
+            self.is_paused = True
+            self.pause_time = datetime.now()
+
+        if self.is_playing:
+            self.absolute_schedule = {}
+            self._calculate_absolute_schedule()
+        self.recalculate_start_times()
+        return created
 
     def _insert_item(self, item, insert_index):
         if insert_index is None or insert_index < 0 or insert_index > len(self.playlist):
@@ -97,59 +219,87 @@ class PlaylistManager:
 
     def _validate_item_async(self, item):
         filepath = item["location"]
+        deadline = time.monotonic() + 30.0
 
         with self.validation_condition:
-            while filepath in self.active_validations:
+            while filepath in self.active_validations and time.monotonic() < deadline:
                 self.validation_condition.wait(timeout=1.0)
             self.active_validations.add(filepath)
 
         try:
-            with self.validation_semaphore:
-                self._apply_validation(item, filepath)
+            self._apply_validation(item, filepath)
         finally:
             with self.validation_condition:
                 self.active_validations.discard(filepath)
                 self.validation_condition.notify_all()
 
+    def _cache_key(self, filepath, signature):
+        return f"{filepath}|{signature}"
+
+    def _evict_cache_entries(self, filepath):
+        prefix = f"{filepath}|"
+        for key in [k for k in self.validation_cache if k.startswith(prefix)]:
+            del self.validation_cache[key]
+
+    def _probe_file(self, filepath):
+        probe = getattr(self.validator, "probe", None)
+        if probe is not None:
+            return probe(filepath)
+
+        validation = self.validator.validate_file(filepath)
+        return {
+            "type": validation["type"],
+            "valid": validation["valid"],
+            "duration": validation["duration"],
+            "resolution": validation["resolution"],
+            "file_size": self.validator.get_file_size(filepath),
+            "format": self.validator.get_codec_info(filepath),
+            "bitrate": self.validator.get_bitrate(filepath) if validation["type"] == "video" else None,
+            "playability": "ok",
+            "issues": []
+        }
+
+    def _apply_result(self, item, result):
+        item["type"] = result.get("type", "video")
+        item["duration"] = result.get("duration")
+        item["duration_formatted"] = result.get("duration_formatted") or (
+            self.validator.get_video_duration_formatted(result.get("duration")) if item["type"] == "video" else "STATIC"
+        )
+        item["status"] = "normal" if result.get("valid") else "corrupted"
+        item["resolution"] = result.get("resolution")
+        item["file_size"] = result.get("file_size")
+        item["format"] = result.get("format")
+        item["bitrate"] = result.get("bitrate")
+        item["playability"] = result.get("playability", "ok")
+        item["issues"] = list(result.get("issues") or [])
+
     def _apply_validation(self, item, filepath):
         try:
-            if filepath in self.validation_cache and os.path.exists(filepath):
-                cached = self.validation_cache[filepath]
-                item["type"] = cached["type"]
-                item["duration"] = cached["duration"]
-                item["duration_formatted"] = cached["duration_formatted"]
-                item["status"] = cached["status"]
-                item["resolution"] = cached["resolution"]
-                item["file_size"] = cached["file_size"]
-                item["format"] = cached["format"]
-                item["bitrate"] = cached["bitrate"]
+            signature = self.file_signature(filepath)
+            key = self._cache_key(filepath, signature)
+
+            if signature and key in self.validation_cache:
+                self._apply_result(item, self.validation_cache[key])
             else:
-                validation = self.validator.validate_file(filepath)
+                result = self._probe_file(filepath)
+                result["duration_formatted"] = (
+                    self.validator.get_video_duration_formatted(result.get("duration"))
+                    if result.get("type") == "video" else "STATIC"
+                )
+                if "file_size" not in result:
+                    result["file_size"] = self.validator.get_file_size(filepath)
+                self._apply_result(item, result)
+                if signature:
+                    self._evict_cache_entries(filepath)
+                    self.validation_cache[key] = result
 
-                item["type"] = validation["type"]
-                item["duration"] = validation["duration"]
-                item["duration_formatted"] = self.validator.get_video_duration_formatted(validation["duration"]) if validation["type"] == "video" else "STATIC"
-                item["status"] = "normal" if validation["valid"] else "corrupted"
-                item["resolution"] = validation["resolution"]
-                item["file_size"] = self.validator.get_file_size(filepath)
-                item["format"] = self.validator.get_codec_info(filepath)
-                item["bitrate"] = self.validator.get_bitrate(filepath) if validation["type"] == "video" else None
-
-                self.validation_cache[filepath] = {
-                    "type": item["type"],
-                    "duration": item["duration"],
-                    "duration_formatted": item["duration_formatted"],
-                    "status": item["status"],
-                    "resolution": item["resolution"],
-                    "file_size": item["file_size"],
-                    "format": item["format"],
-                    "bitrate": item["bitrate"]
-                }
-        except:
+            item["file_signature"] = signature
+        except Exception:
             item["status"] = "corrupted"
             item["duration_formatted"] = "ERROR"
-            if filepath in self.validation_cache:
-                del self.validation_cache[filepath]
+            item["playability"] = "unsupported"
+            item["issues"] = [{"level": "error", "code": "probe_failed", "message": "The file could not be analysed"}]
+            self._evict_cache_entries(filepath)
 
         try:
             if self.is_playing:
@@ -159,6 +309,8 @@ class PlaylistManager:
         except Exception:
             pass
 
+        self._bump_revision()
+        self.last_validation_at = time.monotonic()
         self.validation_completed = True
 
     def insert_stop_event(self, insert_index):
@@ -171,11 +323,15 @@ class PlaylistManager:
             "duration_formatted": None,
             "status": "normal",
             "resolution": None,
-            "start_time": None
+            "start_time": None,
+            "playability": "ok",
+            "issues": [],
+            "file_signature": ""
         }
 
         self.next_id += 1
         self._insert_item(item, insert_index)
+        self._bump_revision()
 
         if self.is_playing:
             self.absolute_schedule = {}
@@ -194,11 +350,15 @@ class PlaylistManager:
             "status": "normal",
             "resolution": None,
             "start_time": None,
+            "playability": "ok",
+            "issues": [],
+            "file_signature": "",
             "note": note
         }
 
         self.next_id += 1
         self._insert_item(item, insert_index)
+        self._bump_revision()
 
         if self.is_playing:
             self.absolute_schedule = {}
@@ -218,6 +378,9 @@ class PlaylistManager:
             "status": "normal",
             "resolution": None,
             "start_time": None,
+            "playability": "ok",
+            "issues": [],
+            "file_signature": "",
             "obs_scene": obs_scene,
             "obs_source": obs_source,
             "obs_action": obs_action,
@@ -227,6 +390,7 @@ class PlaylistManager:
 
         self.next_id += 1
         self._insert_item(item, insert_index)
+        self._bump_revision()
 
         if self.is_playing:
             self.absolute_schedule = {}
@@ -279,26 +443,75 @@ class PlaylistManager:
             still_in_playlist = any(item.get("location") == filepath for item in self.playlist)
 
             if not still_in_playlist:
-                if filepath in self.validation_cache:
-                    del self.validation_cache[filepath]
-                gc.collect()
+                self._evict_cache_entries(filepath)
+
+        if item_to_remove is not None:
+            self._bump_revision()
 
         if self.is_playing:
             self.absolute_schedule = {}
             self._calculate_absolute_schedule()
         self.recalculate_start_times()
+        return item_to_remove is not None
+
+    def clear_playlist(self):
+        if self.is_playing:
+            return False
+
+        self.playlist = []
+        self.current_index = -1
+        self.is_playing = False
+        self.is_paused = False
+        self.pause_time = None
+        self.total_pause_time = 0
+        self.current_video_start_time = None
+        self.current_video_elapsed = 0
+        self.next_video_scheduled_time = None
+        self.scheduled_item_id = None
+        self.absolute_schedule = {}
+        self.playlist_start_time = None
+        self.validation_cache = {}
+        self._bump_revision()
+        return True
 
     def reorder_items(self, from_index, to_index):
         if self.current_index >= 0 and (from_index <= self.current_index or to_index <= self.current_index):
-            return
-        if 0 <= from_index < len(self.playlist) and 0 <= to_index < len(self.playlist):
-            item = self.playlist.pop(from_index)
-            self.playlist.insert(to_index, item)
+            return False
+        if not (0 <= from_index < len(self.playlist) and 0 <= to_index < len(self.playlist)):
+            return False
 
-            if self.is_playing:
-                self.absolute_schedule = {}
-                self._calculate_absolute_schedule()
-            self.recalculate_start_times()
+        item = self.playlist.pop(from_index)
+        self.playlist.insert(to_index, item)
+        self._bump_revision()
+
+        if self.is_playing:
+            self.absolute_schedule = {}
+            self._calculate_absolute_schedule()
+        self.recalculate_start_times()
+        return True
+
+    def set_order(self, item_ids):
+        if self.current_index >= 0:
+            head = self.playlist[:self.current_index + 1]
+            tail = self.playlist[self.current_index + 1:]
+        else:
+            head = []
+            tail = list(self.playlist)
+
+        by_id = {item["id"]: item for item in tail}
+        ordered = [by_id.pop(item_id) for item_id in item_ids if item_id in by_id]
+        if not ordered:
+            return False
+
+        ordered.extend(item for item in tail if item["id"] in by_id)
+        self.playlist = head + ordered
+        self._bump_revision()
+
+        if self.is_playing:
+            self.absolute_schedule = {}
+            self._calculate_absolute_schedule()
+        self.recalculate_start_times()
+        return True
 
     def move_items(self, item_ids, position):
         ids = set(item_ids)
@@ -310,6 +523,7 @@ class PlaylistManager:
         remaining = [item for item in self.playlist if item["id"] not in ids]
         position = max(self.current_index + 1, min(int(position), len(remaining)))
         self.playlist = remaining[:position] + moving + remaining[position:]
+        self._bump_revision()
 
         if self.is_playing:
             self.absolute_schedule = {}
@@ -330,7 +544,7 @@ class PlaylistManager:
             self.current_index = 0
 
         current_item = self.get_current_item()
-        if current_item and current_item.get("status") == "corrupted":
+        if current_item and (current_item.get("status") == "corrupted" or current_item.get("playability") == "unsupported"):
             self.next()
             return
 
@@ -426,7 +640,7 @@ class PlaylistManager:
                         self.on_obs_event(next_item)
                     continue
 
-                if next_item.get("status") == "corrupted":
+                if next_item.get("status") == "corrupted" or next_item.get("playability") == "unsupported":
                     continue
 
                 if next_item["type"] in ["video", "image"]:
@@ -490,9 +704,11 @@ class PlaylistManager:
             pass
         return self.output_volume
 
-    def seek(self, position_seconds):
+    def seek(self, position_seconds, item_id=None):
         current_item = self.get_current_item()
         if not current_item or current_item.get("type") != "video":
+            return False
+        if item_id is not None and current_item["id"] != item_id:
             return False
         if self.current_video_start_time is None:
             return False
@@ -518,9 +734,45 @@ class PlaylistManager:
         for item in self.playlist:
             if item["id"] == item_id:
                 item["status"] = "corrupted"
-                if item["location"] in self.validation_cache:
-                    del self.validation_cache[item["location"]]
+                if item.get("location"):
+                    self._evict_cache_entries(item["location"])
+                self._bump_revision()
                 break
+
+    def mark_for_revalidation(self, item_id):
+        for item in self.playlist:
+            if item["id"] == item_id and item.get("location"):
+                self._evict_cache_entries(item["location"])
+                item["status"] = "validating"
+                item["duration_formatted"] = "Validating..."
+                item["issues"] = []
+                item["playability"] = "ok"
+                self._bump_revision()
+                self.validation_executor.submit(self._validate_item_async, item)
+                return True
+        return False
+
+    def record_playback_error(self, item_id, code, message):
+        for item in self.playlist:
+            if item["id"] == item_id:
+                item["status"] = "corrupted"
+                item["playability"] = "unsupported"
+                issues = list(item.get("issues") or [])
+                issues = [issue for issue in issues if issue.get("code") != code]
+                issues.append({"level": "error", "code": code or "playback_failed", "message": message or "The player could not decode this file"})
+                item["issues"] = issues
+                if item.get("location"):
+                    self._evict_cache_entries(item["location"])
+                self._bump_revision()
+                return item
+        return None
+
+    def shutdown(self):
+        self.running = False
+        try:
+            self.validation_executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            self.validation_executor.shutdown(wait=False)
 
     def _start_cleanup_thread(self):
         self.cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
@@ -582,20 +834,15 @@ class PlaylistManager:
             try:
                 time.sleep(60)
 
-                gc.collect()
-
                 files_in_playlist = set()
                 for item in self.playlist:
                     if item.get("location"):
                         files_in_playlist.add(item.get("location"))
 
-                self.validation_threads = [t for t in self.validation_threads if t.is_alive()]
-
-                cache_files = list(self.validation_cache.keys())
-                for filepath in cache_files:
-                    if not os.path.exists(filepath) or filepath not in files_in_playlist:
-                        if filepath in self.validation_cache:
-                            del self.validation_cache[filepath]
+                for key in list(self.validation_cache.keys()):
+                    filepath = key.rsplit("|", 1)[0]
+                    if filepath not in files_in_playlist:
+                        del self.validation_cache[key]
 
                 if len(self.validation_cache) > self.validation_cache_max:
                     overflow = len(self.validation_cache) - self.validation_cache_max
@@ -740,8 +987,14 @@ class PlaylistManager:
 
     def check_missing_files(self):
         missing_items = []
+        changed_items = []
         for item in list(self.playlist):
-            if item["type"] in ["video", "image"] and item["location"]:
-                if not os.path.exists(item["location"]):
-                    missing_items.append(item["id"])
-        return missing_items
+            if item["type"] not in ["video", "image"] or not item.get("location"):
+                continue
+
+            signature = self.file_signature(item["location"])
+            if not signature:
+                missing_items.append(item["id"])
+            elif item.get("file_signature") and signature != item["file_signature"] and item.get("status") != "validating":
+                changed_items.append(item["id"])
+        return {"missing": missing_items, "changed": changed_items}

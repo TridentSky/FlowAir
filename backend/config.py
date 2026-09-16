@@ -4,8 +4,8 @@ class Config:
     HOST = "0.0.0.0"
     PORT = 8000
 
-    ALLOWED_VIDEO_EXTENSIONS = ['.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm', '.mpeg', '.mpg']
-    ALLOWED_IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tiff', '.gif']
+    ALLOWED_VIDEO_EXTENSIONS = ['.mp4', '.m4v', '.mov', '.mkv', '.webm', '.avi', '.wmv', '.flv', '.mpeg', '.mpg']
+    ALLOWED_IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.bmp', '.webp', '.gif', '.tiff', '.tif']
 
     _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
