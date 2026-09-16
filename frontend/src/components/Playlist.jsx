@@ -40,6 +40,126 @@ const issueTitle = (item) => {
   return item.issues.map(issue => issue.message).join(' • ')
 }
 
+const ACTIVE_CONVERSION = ['queued', 'running']
+const CONVERTIBLE_PLANS = ['remux', 'audio', 'full']
+const SKIPPED_ON_AIR = 'It is skipped on air until it is ready.'
+
+const VIDEO_CODEC_LABELS = {
+  h264: 'H.264',
+  hevc: 'HEVC',
+  h265: 'HEVC',
+  mpeg2video: 'MPEG-2',
+  mpeg1video: 'MPEG-1',
+  vc1: 'VC-1',
+  wmv1: 'WMV 7',
+  wmv2: 'WMV 8',
+  wmv3: 'WMV 9',
+  mpeg4: 'MPEG-4 Part 2',
+  msmpeg4v2: 'MS MPEG-4',
+  msmpeg4v3: 'MS MPEG-4',
+  prores: 'ProRes',
+  dnxhd: 'DNxHD',
+  mjpeg: 'Motion JPEG',
+  av1: 'AV1',
+  vp9: 'VP9',
+  vp8: 'VP8'
+}
+
+const AUDIO_CODEC_LABELS = {
+  aac: 'AAC',
+  ac3: 'AC-3',
+  eac3: 'E-AC-3',
+  dts: 'DTS',
+  truehd: 'Dolby TrueHD',
+  mp2: 'MP2',
+  mp3: 'MP3',
+  wmav2: 'WMA',
+  wmapro: 'WMA Pro'
+}
+
+const ENCODER_LABELS = {
+  h264_qsv: 'Intel Quick Sync',
+  h264_nvenc: 'NVIDIA NVENC',
+  h264_amf: 'AMD AMF',
+  h264_mf: 'Windows Media Foundation',
+  libx264: 'the processor (x264)'
+}
+
+const codecLabel = (labels, value) => {
+  const key = String(value || '').toLowerCase()
+  if (!key) return ''
+  if (labels[key]) return labels[key]
+  if (key.startsWith('pcm_')) return 'PCM'
+  return key.toUpperCase()
+}
+
+const videoCodecOf = (item) => {
+  if (item.video_codec) return codecLabel(VIDEO_CODEC_LABELS, item.video_codec)
+  const match = /\(([^)]+)\)/.exec(item.format || '')
+  return match ? codecLabel(VIDEO_CODEC_LABELS, match[1]) : ''
+}
+
+const conversionOf = (item) => {
+  const conversion = item && item.conversion
+  if (!conversion || typeof conversion !== 'object') return null
+  if (!CONVERTIBLE_PLANS.includes(conversion.plan)) return null
+  return {
+    plan: conversion.plan,
+    status: conversion.status || 'none',
+    progress: Math.max(0, Math.min(100, Math.floor(Number(conversion.progress) || 0))),
+    encoder: conversion.encoder || '',
+    error: conversion.error || ''
+  }
+}
+
+const isPreparing = (item) => {
+  const conversion = conversionOf(item)
+  return item.playability === 'preparing' || !!(conversion && ACTIVE_CONVERSION.includes(conversion.status))
+}
+
+const canStartConversion = (item) => {
+  const conversion = conversionOf(item)
+  return !!conversion && !ACTIVE_CONVERSION.includes(conversion.status) && conversion.status !== 'done'
+}
+
+const describeWork = (item, conversion) => {
+  if (conversion.plan === 'remux') return 'Copying the picture and sound into an MP4 file (no re-encoding)'
+  if (conversion.plan === 'audio') {
+    const audio = codecLabel(AUDIO_CODEC_LABELS, item.audio_codec)
+    return `Converting the ${audio ? `${audio} ` : ''}sound to AAC (the picture is copied as it is)`
+  }
+  const video = videoCodecOf(item)
+  const source = video && video !== 'H.264' ? `${video} to H.264` : 'the video to H.264'
+  const encoder = conversion.encoder ? ` with ${ENCODER_LABELS[conversion.encoder] || conversion.encoder}` : ''
+  return `Converting ${source}${encoder}`
+}
+
+const conversionTitle = (item) => {
+  const conversion = conversionOf(item)
+  if (!conversion) return item.playability === 'preparing' ? `Preparing this file for playout. ${SKIPPED_ON_AIR}` : ''
+  const work = describeWork(item, conversion)
+  if (conversion.status === 'running') return `${work} (${conversion.progress}%). ${SKIPPED_ON_AIR}`
+  if (conversion.status === 'queued') return `Waiting in line: ${work.charAt(0).toLowerCase()}${work.slice(1)}. ${SKIPPED_ON_AIR}`
+  if (conversion.status === 'done') return 'Plays from a converted copy. The original file is not changed.'
+  if (conversion.status === 'failed') {
+    return `The conversion failed${conversion.error ? `: ${conversion.error}` : ''}. Right-click and choose Convert to try again.`
+  }
+  if (conversion.status === 'cancelled') return 'The conversion was cancelled. Right-click and choose Convert to start it again.'
+  if (conversion.plan === 'full') {
+    const video = videoCodecOf(item)
+    return `${video && video !== 'H.264' ? video : 'This video'} cannot be played directly. Right-click and choose Convert to make a playable copy.`
+  }
+  return 'This file needs a quick conversion before it can play. Right-click and choose Convert.'
+}
+
+const conversionKey = (item) => {
+  const conversion = item.conversion
+  if (!conversion || typeof conversion !== 'object') return ''
+  return `${conversion.plan}|${conversion.status}|${Math.floor(Number(conversion.progress) || 0)}|${conversion.encoder || ''}|${conversion.error || ''}`
+}
+
+const joinTitles = (...parts) => parts.filter(Boolean).join('\n')
+
 const issuesEqual = (prev, next) => {
   const a = prev || []
   const b = next || []
@@ -74,6 +194,10 @@ const rowPropsEqual = (prev, next) => {
     a.loop === b.loop &&
     a.note === b.note &&
     a.playability === b.playability &&
+    a.format === b.format &&
+    a.video_codec === b.video_codec &&
+    a.audio_codec === b.audio_codec &&
+    conversionKey(a) === conversionKey(b) &&
     issuesEqual(a.issues, b.issues) &&
     a.obs_action === b.obs_action &&
     a.obs_scene === b.obs_scene &&
@@ -112,7 +236,10 @@ const PlaylistRow = React.memo(({
   const isSpecial = SPECIAL_TYPES.includes(item.type)
   const kind = isSpecial ? item.type : 'media'
   const label = rowLabel(item)
-  const issues = issueTitle(item)
+  const preparing = !isSpecial && isPreparing(item)
+  const conversion = isSpecial ? null : conversionOf(item)
+  const conversionText = isSpecial ? '' : conversionTitle(item)
+  const issues = preparing ? conversionText : joinTitles(issueTitle(item), conversionText)
 
   const setRef = useCallback((el) => registerRow(item.id, el), [registerRow, item.id])
   const handleSelect = useCallback((e) => onSelect(e, index), [onSelect, index])
@@ -148,7 +275,7 @@ const PlaylistRow = React.memo(({
         data-past={isPast ? '1' : '0'}
         data-dragging={isDragging ? '1' : '0'}
         data-corrupt={item.status === 'corrupted' ? '1' : '0'}
-        data-warn={item.playability && item.playability !== 'ok' ? item.playability : 'ok'}
+        data-warn={preparing ? 'preparing' : (item.playability && item.playability !== 'ok' ? item.playability : 'ok')}
         draggable={canDrag}
         onDragStart={handleStart}
         onDragOver={handleOver}
@@ -162,13 +289,21 @@ const PlaylistRow = React.memo(({
           {item.status === 'validating' ? <span className="pl-spin" /> : <span className="pl-dot" />}
         </div>
         <div className="pl-cell pl-cell--num">{startText}</div>
-        <div className="pl-cell pl-cell--num">
-          {isSpecial ? '--:--' : (item.status === 'validating' ? 'Validating' : (item.duration_formatted || '--:--'))}
-        </div>
+        {preparing ? (
+          <div className="pl-cell pl-cell--num pl-cell--prep" title={conversionText}>
+            <span className="pl-spin pl-spin--sm" />
+            <span className="pl-prep-word">{conversion && conversion.status === 'queued' ? 'Queued' : 'Preparing'}</span>
+            {conversion && conversion.status === 'running' && <span className="pl-prep-pct">{conversion.progress}%</span>}
+          </div>
+        ) : (
+          <div className="pl-cell pl-cell--num">
+            {isSpecial ? '--:--' : (item.status === 'validating' ? 'Validating' : (item.duration_formatted || '--:--'))}
+          </div>
+        )}
         <div className="pl-cell pl-cell--type">
           <Icon name={rowIcon(item)} size={16} />
         </div>
-        <div className={isSpecial ? 'pl-cell pl-cell--name pl-cell--wide' : 'pl-cell pl-cell--name'} title={label}>{label}</div>
+        <div className={isSpecial ? 'pl-cell pl-cell--name pl-cell--wide' : 'pl-cell pl-cell--name'} title={joinTitles(label, conversionText)}>{label}</div>
         {!isSpecial && (
           <div
             className={canOpenLocation ? 'pl-cell pl-cell--path pl-cell--link' : 'pl-cell pl-cell--path'}
@@ -237,6 +372,8 @@ const Playlist = ({
   nextHighlightId = null,
   onOpenLocation,
   onRevalidateItem,
+  onConvertItem,
+  onCancelConversion,
   onClearSelection,
   searchOpen = false,
   filterActive = false,
@@ -276,6 +413,8 @@ const Playlist = ({
     onToggleLoop,
     onOpenLocation,
     onRevalidateItem,
+    onConvertItem,
+    onCancelConversion,
     onClearSelection,
     filterActive,
     searchQuery,
@@ -665,6 +804,18 @@ const Playlist = ({
     closeContextMenu()
   }
 
+  const handleConvertMenu = () => {
+    const convert = propsRef.current.onConvertItem
+    if (convert && contextMenu.item) convert(contextMenu.item.id)
+    closeContextMenu()
+  }
+
+  const handleCancelConversionMenu = () => {
+    const cancel = propsRef.current.onCancelConversion
+    if (cancel && contextMenu.item) cancel(contextMenu.item.id)
+    closeContextMenu()
+  }
+
   const handleCopyPath = () => {
     const location = contextMenu.item ? contextMenu.item.location : ''
     if (location && navigator.clipboard) {
@@ -758,9 +909,14 @@ const Playlist = ({
 
   const menuItem = contextMenu ? contextMenu.item : null
   const canCopyPath = !!(menuItem && !SPECIAL_TYPES.includes(menuItem.type) && menuItem.location)
-  const canRevalidate = !!(menuItem && onRevalidateItem && !SPECIAL_TYPES.includes(menuItem.type) &&
+  const menuMedia = !!(menuItem && !SPECIAL_TYPES.includes(menuItem.type))
+  const menuPreparing = menuMedia && isPreparing(menuItem)
+  const menuConversion = menuMedia ? conversionOf(menuItem) : null
+  const canConvert = !!(menuMedia && onConvertItem && !menuPreparing && canStartConversion(menuItem))
+  const canCancelConversion = !!(menuConversion && onCancelConversion && ACTIVE_CONVERSION.includes(menuConversion.status))
+  const canRevalidate = !!(menuMedia && onRevalidateItem && !menuPreparing &&
     (menuItem.status === 'corrupted' || menuItem.playability === 'unsupported'))
-  const menuEntries = (menuItem ? 1 : 0) + (canRevalidate ? 1 : 0) + (canCopyPath ? 1 : 0) + 2 + (obsConnected ? 1 : 0)
+  const menuEntries = (menuItem ? 1 : 0) + (canConvert ? 1 : 0) + (canCancelConversion ? 1 : 0) + (canRevalidate ? 1 : 0) + (canCopyPath ? 1 : 0) + 2 + (obsConnected ? 1 : 0)
   const menuHeight = 52 + menuEntries * 34
 
   return (
@@ -806,7 +962,7 @@ const Playlist = ({
             <div className="pl-head-cell" />
             <div className="pl-head-cell">Start Time</div>
             <div className="pl-head-cell">Duration</div>
-            <div className="pl-head-cell">Type</div>
+            <div className="pl-head-cell pl-head-cell--type">Type</div>
             <div className="pl-head-cell">Name</div>
             <div className="pl-head-cell">Location</div>
             <div className="pl-head-cell pl-head-cell--actions">
@@ -893,6 +1049,28 @@ const Playlist = ({
             >
               <Icon name="plus" size={16} />
               Duplicate Item
+            </button>
+          )}
+          {canConvert && (
+            <button
+              className="pl-menu-item btn-subtle"
+              onClick={handleConvertMenu}
+              title={menuConversion && menuConversion.plan === 'full'
+                ? 'Make a playable H.264 copy of this file. It can take a while and uses the graphics chip when it can. The original file is not changed.'
+                : 'Make a playable MP4 copy of this file. It takes a few seconds. The original file is not changed.'}
+            >
+              <Icon name="video" size={16} />
+              Convert
+            </button>
+          )}
+          {canCancelConversion && (
+            <button
+              className="pl-menu-item btn-subtle"
+              onClick={handleCancelConversionMenu}
+              title="Stop preparing this file. It stays in the playlist and is skipped on air."
+            >
+              <Icon name="close" size={16} />
+              Cancel conversion
             </button>
           )}
           {canRevalidate && (

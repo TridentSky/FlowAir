@@ -39,6 +39,56 @@ const PERFORMANCE_MODE_KEY = 'flowair.performanceMode'
 const PERFORMANCE_MODES = ['auto', 'on', 'off']
 const DIAGNOSTICS_DISMISS_KEY = 'flowair.diagnosticsDismissed'
 
+const CONVERSION_SETTINGS_KEY = 'flowair.conversionSettings'
+const DEFAULT_CONVERSION_SETTINGS = { auto_remux: true, auto_audio: true, auto_full: false }
+const CONVERSION_POLL_MS = 1500
+const ACTIVE_CONVERSION = ['queued', 'running']
+
+const ENCODER_NAMES = {
+  h264_qsv: 'Intel Quick Sync (graphics chip)',
+  h264_nvenc: 'NVIDIA NVENC (graphics card)',
+  h264_amf: 'AMD AMF (graphics card)',
+  h264_mf: 'Windows Media Foundation',
+  libx264: 'Processor (x264)'
+}
+
+const loadConversionSettings = () => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(CONVERSION_SETTINGS_KEY) || 'null')
+    if (saved && typeof saved === 'object') {
+      return Object.keys(DEFAULT_CONVERSION_SETTINGS).reduce((acc, key) => {
+        acc[key] = typeof saved[key] === 'boolean' ? saved[key] : DEFAULT_CONVERSION_SETTINGS[key]
+        return acc
+      }, {})
+    }
+  } catch (error) {
+  }
+  return { ...DEFAULT_CONVERSION_SETTINGS }
+}
+
+const conversionStatusOf = (item) => {
+  const conversion = item && item.conversion
+  return conversion && typeof conversion === 'object' ? conversion.status || 'none' : 'none'
+}
+
+const hasActiveConversion = (items) => items.some(item => ACTIVE_CONVERSION.includes(conversionStatusOf(item)))
+
+const isPreparingItem = (item) => item.playability === 'preparing' || ACTIVE_CONVERSION.includes(conversionStatusOf(item))
+
+const mergeConversion = (item, patch) => {
+  const previous = item.conversion && typeof item.conversion === 'object' ? item.conversion : {}
+  const next = { ...previous, ...patch }
+  if (Object.keys(next).every(key => previous[key] === next[key])) return item
+  return { ...item, conversion: next }
+}
+
+const formatBytes = (value) => {
+  const bytes = Number(value) || 0
+  if (bytes <= 0) return '0 MB'
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`
+  return `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`
+}
+
 const IPC_CHANNELS = [
   'output-window-closed',
   'output-window-opened',
@@ -409,7 +459,7 @@ const resolveNextHighlightId = (items, currentItem, isPlaying, elapsed) => {
     const item = items[index]
     if (item.type === 'stop') return null
     if (item.type === 'note' || item.type === 'obs') continue
-    if (item.status === 'corrupted' || item.playability === 'unsupported') continue
+    if (item.status === 'corrupted' || item.playability === 'unsupported' || isPreparingItem(item)) continue
     if (item.type === 'video' || item.type === 'image') return item.id
   }
   return null
@@ -537,7 +587,7 @@ const HeaderClock = React.memo(({ timeFormat }) => {
 
   return (
     <>
-      <span style={styles.date}>{formatDate(now)}</span>
+      <span className="hdr-date" style={styles.date}>{formatDate(now)}</span>
       <span style={styles.clock}>{formatClock(now, timeFormat)}</span>
     </>
   )
@@ -687,6 +737,11 @@ const App = () => {
   const [hardwareAcceleration, setHardwareAcceleration] = useState(true)
   const [hardwareAccelerationPending, setHardwareAccelerationPending] = useState(false)
   const [audioLevelSource] = useState(createAudioLevelSource)
+  const [conversionSettings, setConversionSettings] = useState(loadConversionSettings)
+  const [conversionInfo, setConversionInfo] = useState({ available: false, encoder: '', detecting: false, cacheBytes: 0, queue: [] })
+  const conversionSettingsRef = useRef(conversionSettings)
+  const gpuDegradedRef = useRef(null)
+  const conversionStatusSeen = useRef(new Map())
   const performanceAutoLogged = useRef('')
   const [networkInfo, setNetworkInfo] = useState({ local_ip: '127.0.0.1', port: 8000, player_url: 'http://127.0.0.1:8000/player' })
 
@@ -759,7 +814,8 @@ const App = () => {
     outputSettingsRef.current = outputSettings
     obsSettingsRef.current = obsSettings
     obsScenesRef.current = obsScenes
-  }, [playlist, playlistRevision, currentItem, isPlaying, selectedItems, copiedItems, outputSettings, obsSettings, obsScenes])
+    conversionSettingsRef.current = conversionSettings
+  }, [playlist, playlistRevision, currentItem, isPlaying, selectedItems, copiedItems, outputSettings, obsSettings, obsScenes, conversionSettings])
 
   const searchNeedle = searchOpen ? searchQuery.trim().toLowerCase() : ''
   const filterActive = searchNeedle.length > 0
@@ -1010,6 +1066,27 @@ const App = () => {
     }
   }, [])
 
+  const loadConversionInfo = useCallback(async () => {
+    try {
+      const status = await api.getConversionStatus()
+      if (!status || typeof status !== 'object' || !('queue' in status || 'encoder' in status)) {
+        setConversionInfo(prev => (prev.available ? { ...prev, available: false } : prev))
+        return null
+      }
+      const queue = Array.isArray(status.queue) ? status.queue : []
+      setConversionInfo({
+        available: true,
+        encoder: typeof status.encoder === 'string' ? status.encoder : '',
+        detecting: Boolean(status.detecting),
+        cacheBytes: Number(status.cache_bytes) || 0,
+        queue
+      })
+      return queue
+    } catch (error) {
+      return null
+    }
+  }, [])
+
   const restoreOutputWindow = useCallback(async () => {
     const electron = getElectron()
     if (!electron) return
@@ -1066,6 +1143,7 @@ const App = () => {
     restoreOutputWindow()
 
     api.updateOutputSettings(outputSettingsRef.current).catch(() => {})
+    api.updateConversionSettings({ ...conversionSettingsRef.current, gpu_degraded: gpuDegradedRef.current }).catch(() => {})
     if (obsSettingsRef.current.enabled) {
       api.updateOBSSettings(obsSettingsRef.current)
         .then(() => api.obsConnect())
@@ -1114,24 +1192,48 @@ const App = () => {
         }
       } else if (data.type === 'item_issue') {
         const authoritative = Array.isArray(data.playlist) ? data.playlist : null
+        const conversionPatch = data.conversion && typeof data.conversion === 'object' ? data.conversion : null
         if (wsPauseDepth.current === 0) {
           if (authoritative) {
             applyPlaylistState(data, true)
-          } else if (data.playability || data.issues || data.status) {
-            setPlaylist(prev => prev.map(item => item.id === data.item_id
-              ? {
+          } else if (data.playability || data.issues || data.status || conversionPatch) {
+            setPlaylist(prev => prev.map(item => {
+              if (item.id !== data.item_id) return item
+              const updated = {
                 ...item,
                 playability: data.playability || item.playability,
                 issues: data.issues || item.issues,
                 status: data.status || item.status
               }
-              : item))
+              return conversionPatch ? mergeConversion(updated, conversionPatch) : updated
+            }))
           }
         }
         const affected = (authoritative || playlistRef.current).find(item => item.id === data.item_id)
         const playability = affected ? affected.playability : data.playability
-        if (affected && playability === 'unsupported') {
+        const conversionState = conversionPatch ? conversionPatch.status || 'none' : conversionStatusOf(affected)
+        const conversionOwnsLog = ['queued', 'running', 'done', 'failed'].includes(conversionState)
+        if (affected && playability === 'unsupported' && !conversionOwnsLog) {
           addLog(`Playback issue: ${describeItem(affected)}`, 'warning')
+        }
+      } else if (data.type === 'conversion_progress' || data.type === 'conversion_updated') {
+        const patch = data.conversion && typeof data.conversion === 'object'
+          ? data.conversion
+          : ['status', 'progress', 'encoder', 'error', 'plan'].reduce((acc, key) => {
+            if (data[key] !== undefined) acc[key] = data[key]
+            return acc
+          }, {})
+        if (wsPauseDepth.current === 0 && data.item_id !== undefined && Object.keys(patch).length > 0) {
+          setPlaylist(prev => {
+            let changed = false
+            const next = prev.map(item => {
+              if (item.id !== data.item_id) return item
+              const merged = mergeConversion(item, patch)
+              if (merged !== item) changed = true
+              return merged
+            })
+            return changed ? next : prev
+          })
         }
       } else if (data.type === 'audio_level') {
         audioLevelSource.publish(typeof data.level === 'number' ? data.level : 0)
@@ -1173,6 +1275,7 @@ const App = () => {
             })
           })
           .catch(() => {})
+        api.updateConversionSettings({ ...conversionSettingsRef.current, gpu_degraded: gpuDegradedRef.current }).catch(() => {})
         const obs = obsSettingsRef.current
         if (obs.enabled) {
           obsReconnectStep.current = 0
@@ -1241,6 +1344,72 @@ const App = () => {
       }
     }
   }, [addLog, applyPlaylistState, audioLevelSource, clearUndoStack, loadDiagnostics, loadDisplays, loadNetworkInfo, loadPlaylist, restoreOutputWindow])
+
+  const conversionActive = useMemo(() => hasActiveConversion(playlist), [playlist])
+
+  useEffect(() => {
+    const seen = conversionStatusSeen.current
+    const liveIds = new Set()
+    playlist.forEach(item => {
+      liveIds.add(item.id)
+      const status = conversionStatusOf(item)
+      const previous = seen.get(item.id)
+      seen.set(item.id, status)
+      if (!previous || previous === status || !ACTIVE_CONVERSION.includes(previous)) return
+      if (status === 'done') {
+        addLog(`Converted and ready to play: ${describeItem(item)}`, 'info')
+      } else if (status === 'failed') {
+        const reason = item.conversion && item.conversion.error ? ` (${item.conversion.error})` : ''
+        addLog(`Conversion failed: ${describeItem(item)}${reason}`, 'error')
+      }
+    })
+    Array.from(seen.keys()).forEach(id => {
+      if (!liveIds.has(id)) seen.delete(id)
+    })
+  }, [playlist, addLog])
+
+  useEffect(() => {
+    if (!conversionActive) return
+    let cancelled = false
+    let timer = null
+
+    const poll = async () => {
+      const queue = await loadConversionInfo()
+      if (cancelled) return
+      if (queue && wsPauseDepth.current === 0) {
+        const byId = new Map(queue.map(entry => [entry.item_id, entry]))
+        const stale = playlistRef.current.some(item => (
+          ACTIVE_CONVERSION.includes(conversionStatusOf(item)) && !byId.has(item.id)
+        ))
+        if (stale) {
+          loadPlaylist()
+        } else {
+          setPlaylist(prev => {
+            let changed = false
+            const next = prev.map(item => {
+              const entry = byId.get(item.id)
+              if (!entry || !ACTIVE_CONVERSION.includes(conversionStatusOf(item))) return item
+              const patch = {}
+              if (ACTIVE_CONVERSION.includes(entry.status)) patch.status = entry.status
+              if (typeof entry.progress === 'number') patch.progress = entry.progress
+              if (typeof entry.encoder === 'string' && entry.encoder) patch.encoder = entry.encoder
+              const merged = mergeConversion(item, patch)
+              if (merged !== item) changed = true
+              return merged
+            })
+            return changed ? next : prev
+          })
+        }
+      }
+      timer = setTimeout(poll, CONVERSION_POLL_MS)
+    }
+
+    timer = setTimeout(poll, CONVERSION_POLL_MS)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [conversionActive, loadConversionInfo, loadPlaylist])
 
   useEffect(() => {
     if (recoverySession && playlist.length > 0) {
@@ -2850,6 +3019,11 @@ const App = () => {
     }
     setOutputSettings(defaults)
     localStorage.setItem('outputSettings', JSON.stringify(defaults))
+    const conversionDefaults = { ...DEFAULT_CONVERSION_SETTINGS }
+    conversionSettingsRef.current = conversionDefaults
+    setConversionSettings(conversionDefaults)
+    localStorage.setItem(CONVERSION_SETTINGS_KEY, JSON.stringify(conversionDefaults))
+    api.updateConversionSettings({ ...conversionDefaults, gpu_degraded: gpuDegradedRef.current }).catch(() => {})
 
     try {
       const electron = getElectron()
@@ -3333,6 +3507,62 @@ const App = () => {
     }
   }, [addLog, loadPlaylist, scheduleValidationRefresh])
 
+  const handleConvertItem = useCallback(async (itemId) => {
+    try {
+      const result = await api.convertItem(itemId)
+      if (!result || result.success === false) {
+        addLog(`The conversion could not be started${result && result.error ? `: ${result.error}` : ''}`, 'warning')
+        return
+      }
+      await loadPlaylist()
+    } catch (error) {
+      addLog('The conversion could not be started', 'error')
+    }
+  }, [addLog, loadPlaylist])
+
+  const handleCancelConversion = useCallback(async (itemId) => {
+    try {
+      const result = await api.cancelConversion(itemId)
+      if (!result || result.success === false) {
+        addLog('The conversion could not be cancelled', 'warning')
+      }
+      await loadPlaylist()
+    } catch (error) {
+      addLog('The conversion could not be cancelled', 'error')
+    }
+  }, [addLog, loadPlaylist])
+
+  const handleConversionSettingChange = useCallback((key, value) => {
+    const previous = conversionSettingsRef.current
+    const updated = { ...previous, [key]: Boolean(value) }
+    conversionSettingsRef.current = updated
+    setConversionSettings(updated)
+    localStorage.setItem(CONVERSION_SETTINGS_KEY, JSON.stringify(updated))
+    api.updateConversionSettings({ ...updated, gpu_degraded: gpuDegradedRef.current })
+      .then(result => {
+        if (!result || result.success === false) {
+          flashSettingsFeedback('Not applied', 'error')
+          return
+        }
+        flashSettingsFeedback('Applied')
+      })
+      .catch(() => flashSettingsFeedback('Not applied', 'error'))
+  }, [flashSettingsFeedback])
+
+  const handleClearConversionCache = useCallback(async () => {
+    try {
+      const result = await api.clearConversionCache()
+      if (!result || result.success === false) {
+        flashSettingsFeedback('Not cleared', 'error')
+      } else {
+        flashSettingsFeedback('Cleared')
+      }
+    } catch (error) {
+      flashSettingsFeedback('Not cleared', 'error')
+    }
+    loadConversionInfo()
+  }, [flashSettingsFeedback, loadConversionInfo])
+
   const handleContainerClick = useCallback((e) => {
     if (confirmDialog || recoverySession || showNoteInput || showOBSEventModal || showOutputSettings || showUpdatePanel) return
 
@@ -3368,6 +3598,14 @@ const App = () => {
   }, [outputWindowActive])
 
   useEffect(() => {
+    if (!diagnostics) return
+    const degraded = diagnostics.health.level !== 'ok'
+    if (gpuDegradedRef.current === degraded) return
+    gpuDegradedRef.current = degraded
+    api.updateConversionSettings({ ...conversionSettingsRef.current, gpu_degraded: degraded }).catch(() => {})
+  }, [diagnostics])
+
+  useEffect(() => {
     if (performanceMode !== 'auto' || !previewSuspended) return
     const signature = diagnosticsSignature(diagnostics)
     if (performanceAutoLogged.current === signature) return
@@ -3380,6 +3618,11 @@ const App = () => {
     loadDiagnostics({ refresh: true })
   }, [loadDiagnostics, settingsTab, showOutputSettings])
 
+  useEffect(() => {
+    if (!showOutputSettings || settingsTab !== 'compatibility') return
+    loadConversionInfo()
+  }, [loadConversionInfo, settingsTab, showOutputSettings])
+
   const diagnosticsBannerVisible = diagnosticsLevel !== 'ok' && diagnosticsDismissed !== diagnosticsSignature(diagnostics)
 
   const updateAvailable = updateState.status === 'available' || updateState.status === 'downloading' || updateState.status === 'ready' || updateState.status === 'installing'
@@ -3388,8 +3631,8 @@ const App = () => {
 
   return (
     <div style={styles.container} onDragOver={handleDragOver} onDrop={handleDrop} onClick={handleContainerClick}>
-      <div style={styles.header}>
-        <div style={styles.headerLeft}>
+      <div className="hdr">
+        <div className="hdr-left">
           <div style={styles.brand}>
             <h1 style={styles.title}>FlowAir</h1>
             <span style={styles.credits}>© TridentSky</span>
@@ -3398,52 +3641,90 @@ const App = () => {
           <LiveIndicator isPlaying={isPlaying} />
           <HeaderClock timeFormat={timeFormat} />
           <button
+            className="hdr-time"
             style={timeFormat === '12' ? styles.timeFormatButtonActive : styles.timeFormatButton}
             onClick={() => handleTimeFormatChange('12')}
+            title="Show the time in 12-hour format"
           >
             12:00
           </button>
           <button
+            className="hdr-time"
             style={timeFormat === '24' ? styles.timeFormatButtonActive : styles.timeFormatButton}
             onClick={() => handleTimeFormatChange('24')}
+            title="Show the time in 24-hour format"
           >
             24:00
           </button>
         </div>
-        <div style={styles.headerRight}>
+        <div className="hdr-right">
           {electronAvailable && (
             <button
-              style={updateAvailable ? { ...styles.headerButton, ...styles.updateButton } : { ...styles.headerButton, ...styles.headerIconButton }}
+              className={updateAvailable ? 'hdr-btn' : 'hdr-btn hdr-btn--icon'}
+              style={updateAvailable ? styles.updateButton : undefined}
               onClick={() => setShowUpdatePanel(prev => !prev)}
               title={updateAvailable ? `FlowAir v${updateState.version} is available` : 'Updates'}
+              aria-label={updateAvailable ? `FlowAir v${updateState.version} is available` : 'Updates'}
             >
               <Icon name="download" size={14} />
               {updateAvailable && <span>v{updateState.version}</span>}
             </button>
           )}
-          <button style={styles.headerButton} onClick={() => setShowOutputSettings(true)} title="Settings">
+          <button
+            className="hdr-btn hdr-btn--collapse"
+            onClick={() => setShowOutputSettings(true)}
+            title="Settings"
+            aria-label="Settings"
+          >
             <Icon name="settings" size={14} />
-            <span>Settings</span>
+            <span className="hdr-label">Settings</span>
           </button>
-          <button style={{ ...styles.headerButton, ...styles.clearButton }} onClick={handleClearPlaylist} title="Remove every item from the playlist">
+          <button
+            className="hdr-btn hdr-btn--collapse"
+            style={styles.clearButton}
+            onClick={handleClearPlaylist}
+            title="Clear Playlist: remove every item from the playlist"
+            aria-label="Clear Playlist"
+          >
             <Icon name="trash" size={14} />
-            <span>Clear Playlist</span>
+            <span className="hdr-label"><span className="hdr-long">Clear Playlist</span><span className="hdr-short">Clear</span></span>
           </button>
-          <button style={styles.headerButton} onClick={handleAddFiles} title="Add media files to the playlist">
+          <button
+            className="hdr-btn hdr-btn--collapse"
+            onClick={handleAddFiles}
+            title="Add Files: add media files to the playlist"
+            aria-label="Add Files"
+          >
             <Icon name="plus" size={14} />
-            <span>Add Files</span>
+            <span className="hdr-label"><span className="hdr-long">Add Files</span><span className="hdr-short">Add</span></span>
           </button>
-          <button style={styles.headerButton} onClick={handleSavePlaylist} title="Save the playlist to a .flowair file">
+          <button
+            className="hdr-btn hdr-btn--collapse"
+            onClick={handleSavePlaylist}
+            title="Save: save the playlist to a .flowair file"
+            aria-label="Save"
+          >
             <Icon name="save" size={14} />
-            <span>Save</span>
+            <span className="hdr-label">Save</span>
           </button>
-          <button style={styles.headerButton} onClick={handleLoadPlaylist} title="Load a .flowair playlist">
+          <button
+            className="hdr-btn hdr-btn--collapse"
+            onClick={handleLoadPlaylist}
+            title="Load: open a .flowair playlist"
+            aria-label="Load"
+          >
             <Icon name="folder" size={14} />
-            <span>Load</span>
+            <span className="hdr-label">Load</span>
           </button>
-          <button style={{ ...styles.headerButton, ...styles.exitHeaderButton }} onClick={handleExit} title={shortcuts.exit ? `Exit FlowAir (${shortcuts.exit})` : 'Exit FlowAir'}>
+          <button
+            className="hdr-btn hdr-btn--collapse"
+            style={styles.exitHeaderButton}
+            onClick={handleExit}
+            title={shortcuts.exit ? `Exit FlowAir (${shortcuts.exit})` : 'Exit FlowAir'}
+            aria-label="Exit FlowAir"
+          >
             <Icon name="close" size={14} />
-            <span>Exit</span>
+            <span className="hdr-label">Exit</span>
           </button>
         </div>
       </div>
@@ -3616,6 +3897,8 @@ const App = () => {
             nextHighlightId={nextHighlightId}
             onOpenLocation={handleOpenLocation}
             onRevalidateItem={handleRevalidateItem}
+            onConvertItem={handleConvertItem}
+            onCancelConversion={handleCancelConversion}
             onClearSelection={handleClearSelection}
             searchOpen={searchOpen}
             searchQuery={searchQuery}
@@ -3940,6 +4223,13 @@ const App = () => {
                 onClick={() => setSettingsTab('shortcuts')}
               >
                 Shortcuts
+              </button>
+              <button
+                className="btn-subtle"
+                style={settingsTab === 'compatibility' ? { ...styles.tab, ...styles.tabActive } : styles.tab}
+                onClick={() => setSettingsTab('compatibility')}
+              >
+                Compatibility
               </button>
               <button
                 className="btn-subtle"
@@ -4384,6 +4674,90 @@ const App = () => {
                 </div>
               )}
 
+              {settingsTab === 'compatibility' && (
+                <div style={styles.settingSection}>
+                  <div style={styles.settingGroupTitle}>Files that cannot play directly</div>
+                  <div style={styles.settingGroupDesc}>
+                    FlowAir makes a playable MP4 copy of files the player cannot open, such as AVI, MKV, HEVC or AC-3 sound. The
+                    original file is never changed, files that already play are never converted, and a row is skipped on air until
+                    its copy is ready.
+                  </div>
+
+                  {[
+                    ['auto_remux', 'Repackage automatically', 'For files whose picture and sound can play but whose container cannot (for example AVI or MKV). It takes seconds and almost no processor.'],
+                    ['auto_audio', 'Convert the sound automatically', 'For files whose picture can play but whose sound cannot (for example AC-3, E-AC-3 or DTS). The picture is copied, only the sound is converted. It is quick.'],
+                    ['auto_full', 'Convert the picture automatically', 'For video the player cannot decode (for example HEVC, MPEG-2 or VC-1). This is heavy work and can take as long as the clip on a small PC. When it is off, right-click the row and choose Convert.']
+                  ].map(([key, label, hint]) => (
+                    <React.Fragment key={key}>
+                      <div style={styles.settingRow}>
+                        <label style={styles.settingLabel}>
+                          <input
+                            type="checkbox"
+                            checked={Boolean(conversionSettings[key])}
+                            onChange={(e) => handleConversionSettingChange(key, e.target.checked)}
+                            style={styles.checkbox}
+                          />
+                          {label}
+                        </label>
+                      </div>
+                      <div style={styles.settingHint}>{hint}</div>
+                    </React.Fragment>
+                  ))}
+
+                  <div style={styles.settingGroupTitle}>This machine</div>
+
+                  {!conversionInfo.available && (
+                    <div style={styles.settingHint}>The playout engine did not report its conversion status.</div>
+                  )}
+
+                  <div style={styles.diagGrid}>
+                    <div style={styles.diagRow}>
+                      <span style={styles.diagKey}>Video encoder</span>
+                      <span style={styles.diagValue}>
+                        {conversionInfo.encoder
+                          ? (ENCODER_NAMES[conversionInfo.encoder] || conversionInfo.encoder)
+                          : (conversionInfo.available ? (conversionInfo.detecting ? 'Detecting...' : 'Not tested yet') : 'Unknown')}
+                      </span>
+                    </div>
+                    <div style={styles.diagRow}>
+                      <span style={styles.diagKey}>Files being prepared</span>
+                      <span style={styles.diagValue}>
+                        {conversionInfo.queue.filter(entry => ACTIVE_CONVERSION.includes(entry.status)).length}
+                      </span>
+                    </div>
+                    <div style={styles.diagRow}>
+                      <span style={styles.diagKey}>Converted copies on disk</span>
+                      <span style={styles.diagValue}>{formatBytes(conversionInfo.cacheBytes)}</span>
+                    </div>
+                  </div>
+                  <div style={styles.settingHint}>
+                    The encoder is chosen by a short test when FlowAir starts. A graphics chip encoder is much lighter than the
+                    processor. Clearing the cache only removes copies that no playlist row uses.
+                  </div>
+
+                  <div style={styles.sectionButtonRow}>
+                    {settingsFeedback && (
+                      <span style={settingsFeedback.tone === 'error' ? styles.settingsFeedbackError : styles.settingsFeedback}>
+                        {settingsFeedback.message}
+                      </span>
+                    )}
+                    <button
+                      style={{ ...styles.sectionButton, ...styles.modalButtonCancel }}
+                      onClick={loadConversionInfo}
+                    >
+                      Refresh
+                    </button>
+                    <button
+                      style={{ ...styles.sectionButton, ...styles.sectionButtonPrimary }}
+                      onClick={handleClearConversionCache}
+                      disabled={!conversionInfo.available}
+                    >
+                      Clear cache
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {settingsTab === 'diagnostics' && (
                 <div style={styles.settingSection}>
                   <div style={styles.settingGroupTitle}>This machine</div>
@@ -4552,19 +4926,6 @@ const styles = {
     userSelect: 'none',
     position: 'relative'
   },
-  header: {
-    background: 'var(--bg-layer-2)',
-    padding: '10px 20px',
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    borderBottom: '1px solid var(--stroke)'
-  },
-  headerLeft: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '20px'
-  },
   brand: {
     display: 'flex',
     flexDirection: 'column',
@@ -4606,7 +4967,6 @@ const styles = {
     fontVariantNumeric: 'tabular-nums'
   },
   timeFormatButton: {
-    padding: '4px 10px',
     background: 'var(--bg-layer-3)',
     border: '1px solid var(--stroke-strong)',
     borderRadius: 'var(--radius-sm)',
@@ -4616,7 +4976,6 @@ const styles = {
     fontFamily: 'var(--font-mono)'
   },
   timeFormatButtonActive: {
-    padding: '4px 10px',
     background: 'var(--accent-soft)',
     border: '1px solid var(--accent)',
     borderRadius: 'var(--radius-sm)',
@@ -4624,27 +4983,6 @@ const styles = {
     fontSize: '11px',
     fontWeight: '600',
     fontFamily: 'var(--font-mono)'
-  },
-  headerRight: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '10px'
-  },
-  headerButton: {
-    padding: '6px 14px',
-    background: 'var(--bg-layer-3)',
-    border: '1px solid var(--stroke-strong)',
-    borderRadius: 'var(--radius)',
-    color: 'var(--text-primary)',
-    fontSize: '12px',
-    fontWeight: '500',
-    display: 'flex',
-    alignItems: 'center',
-    gap: '7px'
-  },
-  headerIconButton: {
-    padding: '6px 10px',
-    color: 'var(--text-tertiary)'
   },
   clearButton: {
     background: 'var(--danger-soft)',

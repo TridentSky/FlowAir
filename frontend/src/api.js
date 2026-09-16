@@ -26,6 +26,16 @@ export const api = {
   addItem: (filepath, insertIndex = null, loop = false) => post('/playlist/add', { filepath, insertIndex, loop: Boolean(loop) }),
   removeItem: (itemId) => post('/playlist/remove', { item_id: itemId }),
   revalidateItem: (itemId) => post('/playlist/revalidate', { item_id: itemId }),
+  convertItem: (itemId) => post('/playlist/convert', { item_id: itemId }),
+  cancelConversion: (itemId) => post('/playlist/convert/cancel', { item_id: itemId }),
+  getConversionStatus: () => get('/conversion/status'),
+  updateConversionSettings: (settings) => post('/conversion/settings', {
+    auto_remux: Boolean(settings.auto_remux),
+    auto_audio: Boolean(settings.auto_audio),
+    auto_full: Boolean(settings.auto_full),
+    gpu_degraded: typeof settings.gpu_degraded === 'boolean' ? settings.gpu_degraded : null
+  }),
+  clearConversionCache: () => post('/conversion/clear_cache'),
   duplicateItem: (itemId, insertIndex = null) => post('/playlist/duplicate', { item_id: itemId, insertIndex }),
   restoreItems: (items, position = null) => post('/playlist/restore', { items, position }),
   clearPlaylist: () => post('/playlist/clear'),

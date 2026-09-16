@@ -10,6 +10,30 @@ const HINTS = [
   { id: 'cue', label: 'Cue' }
 ]
 
+const ACTIVATION_KEYS = [' ', 'Spacebar', 'Enter']
+
+const keepFocusAway = (e) => {
+  e.preventDefault()
+}
+
+const releaseFocus = () => {
+  const active = document.activeElement
+  if (active && active !== document.body && typeof active.blur === 'function') active.blur()
+}
+
+const blockNativeActivation = (e) => {
+  if (ACTIVATION_KEYS.includes(e.key)) e.preventDefault()
+}
+
+const transportProps = {
+  className: 'transport-btn',
+  tabIndex: -1,
+  onMouseDown: keepFocusAway,
+  onFocus: releaseFocus,
+  onKeyDown: blockNativeActivation,
+  onKeyUp: blockNativeActivation
+}
+
 const keyOf = (shortcuts, id) => {
   const value = shortcuts ? shortcuts[id] : ''
   return typeof value === 'string' && value ? value : DEFAULT_KEYS[id]
@@ -60,7 +84,8 @@ const Controls = ({ isPlaying, selectedItem, selectedItems = [], onPlay, onStop,
       <div style={styles.mainButtons}>
         <button
           style={isPlaying ? styles.playButtonActive : styles.playButton}
-          onClick={onPlay}
+          {...transportProps}
+          onClick={() => { releaseFocus(); onPlay() }}
           title={`Play (${playKey})`}
         >
           <Icon name="play" size={18} />
@@ -68,7 +93,8 @@ const Controls = ({ isPlaying, selectedItem, selectedItems = [], onPlay, onStop,
         </button>
         <button
           style={isPlaying ? styles.stopButtonArmed : styles.stopButton}
-          onClick={onStop}
+          {...transportProps}
+          onClick={() => { releaseFocus(); onStop() }}
           title={`Stop (${stopKey})`}
         >
           <Icon name="stop" size={18} />
@@ -76,7 +102,8 @@ const Controls = ({ isPlaying, selectedItem, selectedItems = [], onPlay, onStop,
         </button>
         <button
           style={styles.nextButton}
-          onClick={onNext}
+          {...transportProps}
+          onClick={() => { releaseFocus(); onNext() }}
           title={`Next (${nextKey})`}
         >
           <Icon name="next" size={18} />
@@ -84,7 +111,8 @@ const Controls = ({ isPlaying, selectedItem, selectedItems = [], onPlay, onStop,
         </button>
         <button
           style={selectedItem ? styles.cueButton : styles.cueButtonDisabled}
-          onClick={onCue}
+          {...transportProps}
+          onClick={() => { releaseFocus(); onCue() }}
           disabled={!selectedItem}
           title={selectedItem ? `Cue selected item (${cueKey})` : 'Select an item first'}
         >

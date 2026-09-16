@@ -218,7 +218,8 @@ function backendLaunchSpec() {
       command: path.join(directory, 'flowair-backend.exe'),
       args: [],
       cwd: directory,
-      ffmpegDir: path.join(process.resourcesPath, 'ffmpeg')
+      ffmpegDir: path.join(process.resourcesPath, 'ffmpeg'),
+      cacheDir: mediaCacheDirectory()
     }
   }
   const directory = path.join(__dirname, '..', '..', 'backend')
@@ -226,8 +227,21 @@ function backendLaunchSpec() {
     command: path.join(directory, 'venv', 'Scripts', 'python.exe'),
     args: ['main.py'],
     cwd: directory,
-    ffmpegDir: null
+    ffmpegDir: null,
+    cacheDir: null
   }
+}
+
+function mediaCacheDirectory() {
+  const localAppData = process.env.LOCALAPPDATA
+  if (!localAppData) return null
+  const directory = path.join(localAppData, 'FlowAir', 'media-cache')
+  try {
+    fs.mkdirSync(directory, { recursive: true })
+  } catch (error) {
+    return null
+  }
+  return directory
 }
 
 function probeBackend(timeoutMs = 1500) {
@@ -288,6 +302,9 @@ function startBackendProcess() {
   }
   if (spec.ffmpegDir) {
     env.FLOWAIR_FFMPEG_DIR = spec.ffmpegDir
+  }
+  if (spec.cacheDir) {
+    env.FLOWAIR_CACHE_DIR = spec.cacheDir
   }
 
   const child = spawn(spec.command, spec.args, { cwd: spec.cwd, env, windowsHide: true, stdio: 'ignore' })
