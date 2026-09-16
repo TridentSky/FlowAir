@@ -4,7 +4,10 @@ class Config:
     HOST = "0.0.0.0"
     PORT = 8000
 
-    ALLOWED_VIDEO_EXTENSIONS = ['.mp4', '.m4v', '.mov', '.mkv', '.webm', '.avi', '.wmv', '.flv', '.mpeg', '.mpg']
+    ALLOWED_VIDEO_EXTENSIONS = [
+        '.mp4', '.m4v', '.mov', '.mkv', '.webm', '.avi', '.wmv', '.flv', '.mpeg', '.mpg',
+        '.ts', '.m2ts', '.mts', '.mxf', '.3gp', '.3g2', '.asf', '.f4v', '.vob', '.divx', '.dv', '.ogv'
+    ]
     ALLOWED_IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.bmp', '.webp', '.gif', '.tiff', '.tif']
 
     _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -24,3 +27,14 @@ class Config:
     @staticmethod
     def get_ffprobe_path():
         return Config._resolve_binary("ffprobe")
+
+    @staticmethod
+    def get_ffmpeg_path():
+        return Config._resolve_binary("ffmpeg")
+
+    @staticmethod
+    def get_cache_dir():
+        env_dir = os.environ.get("FLOWAIR_CACHE_DIR")
+        if env_dir:
+            return env_dir
+        return os.path.join(Config._BASE_DIR, ".cache", "media")

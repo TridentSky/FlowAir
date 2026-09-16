@@ -65,6 +65,10 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(update_playlist_times())
     yield
     try:
+        playlist_manager.converter.shutdown()
+    except Exception:
+        pass
+    try:
         obs_controller.disconnect()
         playlist_manager.shutdown()
         if hasattr(playlist_manager, 'cleanup_thread') and playlist_manager.cleanup_thread.is_alive():
@@ -137,6 +141,33 @@ def handle_playback_change(data):
 
 playlist_manager.on_playback_change = handle_playback_change
 
+CONVERSION_BROADCAST_INTERVAL = 1.0
+conversion_broadcast_times = {}
+
+def handle_conversion_change(item_ids, final):
+    if not main_event_loop or not item_ids:
+        return
+    item_id = item_ids[0]
+    now = time.monotonic()
+    if not final and now - conversion_broadcast_times.get(item_id, 0.0) < CONVERSION_BROADCAST_INTERVAL:
+        return
+    if final:
+        for changed_id in item_ids:
+            conversion_broadcast_times.pop(changed_id, None)
+    else:
+        if len(conversion_broadcast_times) > 1000:
+            conversion_broadcast_times.clear()
+        conversion_broadcast_times[item_id] = now
+    try:
+        asyncio.run_coroutine_threadsafe(broadcast_item_issue(item_id), main_event_loop)
+    except RuntimeError:
+        pass
+
+async def broadcast_item_issue(item_id):
+    await broadcast_update(item_issue_message(item_id))
+
+playlist_manager.on_conversion_change = handle_conversion_change
+
 obs_controller = OBSController()
 obs_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="obs-events")
 
@@ -169,9 +200,10 @@ def item_issue_message(item_id):
                 item_id=item_id,
                 status=item.get("status"),
                 playability=item.get("playability", "ok"),
-                issues=item.get("issues") or []
+                issues=item.get("issues") or [],
+                conversion=item.get("conversion")
             )
-    return playlist_message("item_issue", item_id=item_id, status=None, playability="ok", issues=[])
+    return playlist_message("item_issue", item_id=item_id, status=None, playability="ok", issues=[], conversion=None)
 
 def playlist_message(message_type="playlist_updated", **extra):
     message = {
@@ -356,6 +388,15 @@ class SeekRequest(BaseModel):
 class VolumeRequest(BaseModel):
     volume: int
 
+class ConversionItemRequest(BaseModel):
+    item_id: int
+
+class ConversionSettingsRequest(BaseModel):
+    auto_remux: Optional[bool] = None
+    auto_audio: Optional[bool] = None
+    auto_full: Optional[bool] = None
+    gpu_degraded: Optional[bool] = None
+
 def forget_connection(websocket):
     if websocket in active_connections:
         active_connections.remove(websocket)
@@ -476,6 +517,41 @@ async def revalidate_item(request: RemoveItemRequest):
     if success:
         await broadcast_update(item_issue_message(request.item_id))
     return {"success": success}
+
+@app.post("/playlist/convert")
+async def convert_item(request: ConversionItemRequest):
+    conversion_broadcast_times[request.item_id] = time.monotonic()
+    success, error = await asyncio.to_thread(playlist_manager.start_conversion, request.item_id)
+    if success:
+        await broadcast_update(item_issue_message(request.item_id))
+        return {"success": True}
+    conversion_broadcast_times.pop(request.item_id, None)
+    return {"success": False, "error": error}
+
+@app.post("/playlist/convert/cancel")
+async def cancel_item_conversion(request: ConversionItemRequest):
+    success = playlist_manager.cancel_conversion(request.item_id)
+    return {"success": success}
+
+@app.get("/conversion/status")
+async def conversion_status():
+    return playlist_manager.converter.status()
+
+@app.post("/conversion/settings")
+async def conversion_settings(request: ConversionSettingsRequest):
+    settings = await asyncio.to_thread(
+        playlist_manager.update_conversion_settings,
+        auto_remux=request.auto_remux,
+        auto_audio=request.auto_audio,
+        auto_full=request.auto_full,
+        gpu_degraded=request.gpu_degraded
+    )
+    return {"success": True, "settings": settings}
+
+@app.post("/conversion/clear_cache")
+async def conversion_clear_cache():
+    result = await asyncio.to_thread(playlist_manager.converter.clear_cache)
+    return {"success": True, **result}
 
 @app.post("/playlist/order")
 async def set_playlist_order(request: SetOrderRequest):
@@ -1624,7 +1700,19 @@ VIDEO_MIME_TYPES = {
     '.wmv': 'video/x-ms-wmv',
     '.flv': 'video/x-flv',
     '.mpg': 'video/mpeg',
-    '.mpeg': 'video/mpeg'
+    '.mpeg': 'video/mpeg',
+    '.ts': 'video/mp2t',
+    '.m2ts': 'video/mp2t',
+    '.mts': 'video/mp2t',
+    '.3gp': 'video/3gpp',
+    '.3g2': 'video/3gpp2',
+    '.ogv': 'video/ogg',
+    '.asf': 'video/x-ms-asf',
+    '.f4v': 'video/mp4',
+    '.vob': 'video/mpeg',
+    '.divx': 'video/x-msvideo',
+    '.mxf': 'application/mxf',
+    '.dv': 'video/x-dv'
 }
 
 def find_playlist_item(item_id):
@@ -1691,13 +1779,13 @@ async def stream_video(item_id: int, request: Request):
     if not item or not item.get('location'):
         return JSONResponse({"error": "Item not found"}, status_code=404)
 
-    filepath = item['location']
+    filepath, converted = await asyncio.to_thread(playlist_manager.resolve_stream_path, item)
     file_size = await asyncio.to_thread(get_file_size, filepath)
     if file_size is None:
         return JSONResponse({"error": "File not found"}, status_code=404)
 
     ext = Path(filepath).suffix.lower()
-    media_type = VIDEO_MIME_TYPES.get(ext, 'video/mp4')
+    media_type = 'video/mp4' if converted else VIDEO_MIME_TYPES.get(ext, 'video/mp4')
 
     range_header = request.headers.get('range')
     if range_header:
@@ -1756,14 +1844,21 @@ def watch_parent_process():
     except (psutil.Error, ValueError):
         os._exit(0)
 
+    def exit_engine():
+        try:
+            playlist_manager.converter.shutdown()
+        except Exception:
+            pass
+        os._exit(0)
+
     def monitor():
         while True:
             time.sleep(2)
             try:
                 if not parent.is_running():
-                    os._exit(0)
+                    exit_engine()
             except psutil.Error:
-                os._exit(0)
+                exit_engine()
 
     threading.Thread(target=monitor, daemon=True).start()
 

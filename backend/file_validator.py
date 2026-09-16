@@ -13,7 +13,14 @@ IMAGE_PROBE_TIMEOUT = 10
 
 MAX_OUTPUT_WIDTH = 1920
 MAX_OUTPUT_HEIGHT = 1080
-MAX_BITRATE_BPS = 25000000
+HIGH_BITRATE_LIMITS = [
+    (1280 * 720, 40000000),
+    (1920 * 1080, 80000000),
+    (2560 * 1440, 120000000),
+    (4096 * 2160, 200000000)
+]
+HIGH_BITRATE_LIMIT_MAX = 300000000
+HIGH_FRAME_RATE = 31
 MAX_IMAGE_SIDE = 4096
 
 NATIVE_CONTAINERS = ['.mp4', '.m4v', '.mov', '.webm']
@@ -23,10 +30,27 @@ BLOCKED_CONTAINERS = {
     '.wmv': 'WMV (ASF)',
     '.flv': 'FLV',
     '.mpg': 'MPEG program stream',
-    '.mpeg': 'MPEG program stream'
+    '.mpeg': 'MPEG program stream',
+    '.ts': 'MPEG transport stream',
+    '.m2ts': 'MPEG transport stream (M2TS)',
+    '.mts': 'AVCHD (MTS)',
+    '.mxf': 'MXF',
+    '.asf': 'ASF',
+    '.vob': 'DVD video (VOB)',
+    '.divx': 'DivX',
+    '.dv': 'DV',
+    '.3gp': '3GP',
+    '.3g2': '3G2',
+    '.f4v': 'F4V',
+    '.ogv': 'Ogg video'
 }
+PCM_BLOCKED_CONTAINERS = ['.mp4', '.m4v', '.mov']
 
 PLAYABLE_VIDEO_CODECS = ['h264', 'vp8', 'vp9', 'av1', 'theora']
+MP4_COPYABLE_VIDEO_CODECS = ['h264', 'vp9', 'av1']
+MP4_COPYABLE_AUDIO_CODECS = ['aac', 'mp3', 'opus', 'flac']
+INTERLACED_FIELD_ORDERS = ['tt', 'bb', 'tb', 'bt']
+INDEX_TIMED_CONTAINERS = ['.avi', '.divx']
 BLOCKED_VIDEO_CODECS = {
     'hevc': 'HEVC (H.265)',
     'h265': 'HEVC (H.265)',
@@ -282,7 +306,9 @@ class FileValidator:
             "audio_codec": None,
             "rotation": 0,
             "playability": "ok",
-            "issues": []
+            "issues": [],
+            "conversion_plan": "none",
+            "conversion_info": {}
         }
 
     def _reject(self, result, code, message):
@@ -454,7 +480,100 @@ class FileValidator:
         result["rotation"] = _stream_rotation(video_stream)
 
         self._classify_video(filepath, result, video_stream, audio_streams)
+        self._plan_conversion(filepath, result, format_data, video_stream, audio_streams)
         return result
+
+    def _plan_conversion(self, filepath, result, format_data, video_stream, audio_streams):
+        ext = Path(filepath).suffix.lower()
+        native = ext in NATIVE_CONTAINERS
+        codes = {issue["code"] for issue in result["issues"]}
+        codec_name = result["video_codec"] or ''
+        audio_stream = audio_streams[0] if audio_streams else None
+        audio_codec = result["audio_codec"] or ''
+
+        video_blocked = "video_codec_unsupported" in codes or "h264_profile" in codes
+        if not video_blocked and ext in BLOCKED_CONTAINERS:
+            video_blocked = self._video_blocked(result, video_stream)
+        reordered = ext in INDEX_TIMED_CONTAINERS and (_safe_int(video_stream.get('has_b_frames')) or 0) > 0
+        if reordered:
+            video_blocked = True
+
+        if video_blocked:
+            plan = "full"
+        elif codec_name in MP4_COPYABLE_VIDEO_CODECS:
+            audio_blocked = "audio_codec_unsupported" in codes
+            if ext in PCM_BLOCKED_CONTAINERS and audio_codec.startswith('pcm_'):
+                audio_blocked = True
+            if not native and audio_stream is not None and not audio_blocked:
+                audio_blocked = audio_codec not in MP4_COPYABLE_AUDIO_CODECS
+            if audio_blocked:
+                plan = "audio"
+            elif native:
+                plan = "none"
+            else:
+                plan = "remux"
+        elif native:
+            plan = "none"
+        else:
+            plan = "full"
+
+        result["conversion_plan"] = plan
+        if plan == "none":
+            return
+
+        stream_durations = []
+        for stream in (video_stream, audio_stream):
+            if stream is None:
+                continue
+            value = _safe_float(stream.get('duration')) or _parse_timecode(_tag(stream.get('tags'), 'DURATION'))
+            if value and value > 0:
+                stream_durations.append(value)
+
+        fps = _parse_rate(video_stream.get('avg_frame_rate')) or _parse_rate(video_stream.get('r_frame_rate'))
+        field_order = (video_stream.get('field_order') or '').lower().strip()
+        result["conversion_info"] = {
+            "video_index": _safe_int(video_stream.get('index')),
+            "audio_index": _safe_int(audio_stream.get('index')) if audio_stream is not None else None,
+            "video_codec": codec_name,
+            "audio_codec": audio_codec,
+            "audio_channels": _safe_int(audio_stream.get('channels')) if audio_stream is not None else None,
+            "audio_sample_rate": _safe_int(audio_stream.get('sample_rate')) if audio_stream is not None else None,
+            "width": result["width"],
+            "height": result["height"],
+            "fps": fps,
+            "interlaced": field_order in INTERLACED_FIELD_ORDERS,
+            "reset_video_start": reordered,
+            "bitrate_bps": result["bitrate_bps"],
+            "duration": result["duration"],
+            "stream_duration": max(stream_durations) if stream_durations else None
+        }
+
+    def _video_blocked(self, result, video_stream):
+        codec_name = result["video_codec"] or ''
+        codec_tag = (video_stream.get('codec_tag_string') or '').lower().strip()
+        if codec_name in ('hevc', 'h265') or codec_tag in HEVC_CODEC_TAGS:
+            return True
+        if codec_name == 'mpeg4' or (not codec_name and codec_tag in MPEG4_CODEC_TAGS):
+            return True
+        if codec_name in BLOCKED_VIDEO_CODECS:
+            return True
+        if codec_name == 'h264':
+            profile_issues = []
+            self._classify_h264(result, video_stream, profile_issues)
+            return bool(profile_issues)
+        return False
+
+    def _bitrate_limit(self, result, video_stream):
+        pixels = result["width"] * result["height"]
+        limit = HIGH_BITRATE_LIMIT_MAX
+        for max_pixels, value in HIGH_BITRATE_LIMITS:
+            if pixels <= max_pixels:
+                limit = value
+                break
+        fps = _parse_rate(video_stream.get('avg_frame_rate')) or _parse_rate(video_stream.get('r_frame_rate'))
+        if fps and fps > HIGH_FRAME_RATE:
+            limit *= 2
+        return limit
 
     def _classify_video(self, filepath, result, video_stream, audio_streams):
         issues = result["issues"]
@@ -511,7 +630,7 @@ class FileValidator:
                 f"{label} video may not be decoded by the player - test this file before air"
             ))
 
-        self._classify_audio(result, audio_streams, issues)
+        self._classify_audio(result, audio_streams, issues, ext)
 
         if result["width"] > MAX_OUTPUT_WIDTH or result["height"] > MAX_OUTPUT_HEIGHT:
             issues.append(_issue(
@@ -521,11 +640,11 @@ class FileValidator:
             ))
 
         bitrate_bps = result["bitrate_bps"]
-        if bitrate_bps and bitrate_bps > MAX_BITRATE_BPS:
+        if bitrate_bps and bitrate_bps > self._bitrate_limit(result, video_stream):
             issues.append(_issue(
                 "warn",
                 "bitrate_high",
-                f"Very high bitrate ({bitrate_bps / 1000000:.1f} Mbps) for this machine"
+                f"Unusually high bitrate for {result['resolution']} ({bitrate_bps / 1000000:.1f} Mbps) - playback needs a powerful machine"
             ))
 
         if result["rotation"]:
@@ -551,7 +670,7 @@ class FileValidator:
                 "10-bit or 4:2:2 H.264 cannot be decoded by the player - re-export as 8-bit 4:2:0"
             ))
 
-    def _classify_audio(self, result, audio_streams, issues):
+    def _classify_audio(self, result, audio_streams, issues, ext):
         if not audio_streams:
             issues.append(_issue("warn", "audio_missing", "No audio track - this clip is silent"))
             return
@@ -562,11 +681,19 @@ class FileValidator:
             if codec_name:
                 codecs.append(codec_name)
 
-        for codec_name in codecs:
-            if codec_name in PLAYABLE_AUDIO_CODECS or codec_name.startswith('pcm_s16'):
-                return
+        pcm_blocked = ext in PCM_BLOCKED_CONTAINERS
+        if not (pcm_blocked and codecs and codecs[0].startswith('pcm_')):
+            for codec_name in codecs:
+                if pcm_blocked and codec_name.startswith('pcm_'):
+                    continue
+                if codec_name in PLAYABLE_AUDIO_CODECS or codec_name.startswith('pcm_s16'):
+                    return
 
-        label = AUDIO_CODEC_LABELS.get(codecs[0], codecs[0].upper()) if codecs else "This"
+        label = "This"
+        if codecs and codecs[0].startswith('pcm_'):
+            label = "PCM"
+        elif codecs:
+            label = AUDIO_CODEC_LABELS.get(codecs[0], codecs[0].upper())
         issues.append(_issue(
             "warn",
             "audio_codec_unsupported",

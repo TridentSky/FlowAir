@@ -2,8 +2,19 @@ import os
 import time
 from datetime import datetime, timedelta
 from file_validator import FileValidator
+from media_converter import MediaConverter, ACTIVE_STATUSES, PLANS
 import threading
 from concurrent.futures import ThreadPoolExecutor
+
+SKIPPED_PLAYABILITY = ("unsupported", "preparing")
+
+
+def is_skipped_on_air(item):
+    return item.get("status") == "corrupted" or item.get("playability") in SKIPPED_PLAYABILITY
+
+
+def empty_conversion(plan="none"):
+    return {"plan": plan, "status": "none", "progress": 0, "encoder": "", "error": ""}
 
 
 
@@ -40,6 +51,15 @@ class PlaylistManager:
         self.on_playback_change = None
         self.on_obs_event = None
         self.output_volume = 100
+        self.on_conversion_change = None
+        self.conversion_keys = {}
+        self.conversion_sources = {}
+        self.base_states = {}
+        self.converter = MediaConverter()
+        self.converter.on_update = self._on_conversion_update
+        self.converter.referenced_keys = self._referenced_conversion_keys
+        self.converter.engine_busy = lambda: self.is_playing
+        self.converter.idle_hook = self.queue_pending_conversions
         self.clear_playlist_on_startup()
         self._start_cleanup_thread()
         self._start_force_timing_thread()
@@ -74,7 +94,10 @@ class PlaylistManager:
             "bitrate": None,
             "playability": "ok",
             "issues": [],
-            "file_signature": ""
+            "file_signature": "",
+            "video_codec": None,
+            "audio_codec": None,
+            "conversion": empty_conversion()
         }
 
         self.next_id += 1
@@ -109,9 +132,13 @@ class PlaylistManager:
         item["id"] = self.next_id
         item["start_time"] = None
         item["issues"] = list(source.get("issues") or [])
+        item["conversion"] = dict(source.get("conversion") or empty_conversion())
+        item.setdefault("video_codec", None)
+        item.setdefault("audio_codec", None)
         item.pop("cue_timestamp", None)
 
         self.next_id += 1
+        self._share_conversion(source["id"], item["id"])
         self._insert_item(item, insert_index)
         self._bump_revision()
 
@@ -141,8 +168,12 @@ class PlaylistManager:
             "start_time": None,
             "playability": data.get("playability", "ok"),
             "issues": list(data.get("issues") or []),
-            "file_signature": ""
+            "file_signature": "",
+            "conversion": empty_conversion()
         }
+
+        if item["playability"] not in ["ok", "warn", "unsupported"]:
+            item["playability"] = "ok"
 
         if item_type in ["video", "image"]:
             if not item["location"]:
@@ -151,6 +182,8 @@ class PlaylistManager:
             item["file_size"] = data.get("file_size")
             item["format"] = data.get("format")
             item["bitrate"] = data.get("bitrate")
+            item["video_codec"] = data.get("video_codec")
+            item["audio_codec"] = data.get("audio_codec")
             item["status"] = "validating"
             item["duration_formatted"] = data.get("duration_formatted") or "Validating..."
         elif item_type == "note":
@@ -272,6 +305,8 @@ class PlaylistManager:
         item["bitrate"] = result.get("bitrate")
         item["playability"] = result.get("playability", "ok")
         item["issues"] = list(result.get("issues") or [])
+        item["video_codec"] = result.get("video_codec")
+        item["audio_codec"] = result.get("audio_codec")
 
     def _apply_validation(self, item, filepath):
         try:
@@ -279,7 +314,8 @@ class PlaylistManager:
             key = self._cache_key(filepath, signature)
 
             if signature and key in self.validation_cache:
-                self._apply_result(item, self.validation_cache[key])
+                result = self.validation_cache[key]
+                self._apply_result(item, result)
             else:
                 result = self._probe_file(filepath)
                 result["duration_formatted"] = (
@@ -294,12 +330,15 @@ class PlaylistManager:
                     self.validation_cache[key] = result
 
             item["file_signature"] = signature
+            self._plan_conversion(item, result, signature)
         except Exception:
             item["status"] = "corrupted"
             item["duration_formatted"] = "ERROR"
             item["playability"] = "unsupported"
             item["issues"] = [{"level": "error", "code": "probe_failed", "message": "The file could not be analysed"}]
             self._evict_cache_entries(filepath)
+            self._forget_conversion(item["id"])
+            item["conversion"] = empty_conversion()
 
         try:
             if self.is_playing:
@@ -312,6 +351,179 @@ class PlaylistManager:
         self._bump_revision()
         self.last_validation_at = time.monotonic()
         self.validation_completed = True
+
+    def _find_item(self, item_id):
+        for item in list(self.playlist):
+            if item["id"] == item_id:
+                return item
+        return None
+
+    def _is_on_air(self, item_id):
+        current = self.get_current_item()
+        return bool(self.is_playing and current is not None and current["id"] == item_id)
+
+    def _referenced_conversion_keys(self):
+        return set(list(self.conversion_keys.values()))
+
+    def _plan_conversion(self, item, result, signature):
+        item_id = item["id"]
+        plan = result.get("conversion_plan") or "none"
+        convertible = plan in PLANS and item.get("type") == "video" and result.get("valid") and signature
+        key = self.converter.key_for(item["location"], signature, plan) if convertible else None
+
+        if self.conversion_keys.get(item_id) != key:
+            self._forget_conversion(item_id)
+        self.base_states[item_id] = (item.get("playability", "ok"), list(item.get("issues") or []))
+
+        if key is None:
+            item["conversion"] = empty_conversion()
+            return
+
+        self.conversion_keys[item_id] = key
+        self.conversion_sources[key] = (item["location"], plan, dict(result.get("conversion_info") or {}))
+
+        state = self.converter.lookup(key, plan)
+        if state is not None and state["status"] in ACTIVE_STATUSES:
+            self.converter.attach(key, item_id)
+        elif state is None and self.converter.policy_allows(plan) and not self._is_on_air(item_id):
+            state = self.converter.request(key, item["location"], plan, self.conversion_sources[key][2], item_id)
+
+        if state is None:
+            item["conversion"] = empty_conversion(plan)
+            return
+        self._apply_conversion_state(item, state)
+
+    def _apply_conversion_state(self, item, state):
+        if state["status"] in ACTIVE_STATUSES:
+            item["conversion"] = dict(state)
+            item["playability"] = "preparing"
+            return
+        if state["status"] == "done" and self._apply_converted(item):
+            item["conversion"] = dict(state)
+            return
+        base_playability, base_issues = self.base_states.get(item["id"], ("ok", []))
+        if state["status"] == "done":
+            state = dict(state, status="failed", progress=0, error="The converted copy cannot be read")
+        item["conversion"] = dict(state)
+        item["playability"] = base_playability
+        item["issues"] = list(base_issues)
+
+    def _apply_converted(self, item):
+        key = self.conversion_keys.get(item["id"])
+        path = self.converter.resolve(key) if key else None
+        if not path:
+            return False
+        signature = self.file_signature(path)
+        cache_key = self._cache_key(path, signature)
+        result = self.validation_cache.get(cache_key) if signature else None
+        if result is None:
+            result = self._probe_file(path)
+            if signature:
+                self._evict_cache_entries(path)
+                self.validation_cache[cache_key] = result
+        if not result.get("valid") or result.get("playability") == "unsupported":
+            return False
+        item["playability"] = result.get("playability", "ok")
+        item["issues"] = list(result.get("issues") or [])
+        return True
+
+    def _share_conversion(self, source_id, item_id):
+        key = self.conversion_keys.get(source_id)
+        if key is None:
+            return
+        self.conversion_keys[item_id] = key
+        if source_id in self.base_states:
+            playability, issues = self.base_states[source_id]
+            self.base_states[item_id] = (playability, list(issues))
+        self.converter.attach(key, item_id)
+
+    def _forget_conversion(self, item_id):
+        self.base_states.pop(item_id, None)
+        key = self.conversion_keys.pop(item_id, None)
+        if key is None:
+            return
+        self.converter.release(key, item_id)
+        if key not in self.conversion_keys.values():
+            self.conversion_sources.pop(key, None)
+
+    def _on_conversion_update(self, key, state, item_ids, final):
+        changed = []
+        for item in list(self.playlist):
+            if item["id"] in item_ids and self.conversion_keys.get(item["id"]) == key:
+                self._apply_conversion_state(item, state)
+                changed.append(item["id"])
+        if not changed:
+            return
+        self._bump_revision()
+        if self.on_conversion_change:
+            self.on_conversion_change(changed, final)
+
+    def queue_pending_conversions(self):
+        started = []
+        for item in list(self.playlist):
+            conversion = item.get("conversion") or {}
+            plan = conversion.get("plan")
+            if conversion.get("status") != "none" or plan not in PLANS:
+                continue
+            if item.get("status") != "normal" or not self.converter.policy_allows(plan):
+                continue
+            key = self.conversion_keys.get(item["id"])
+            source = self.conversion_sources.get(key)
+            if source is None or self._is_on_air(item["id"]):
+                continue
+            state = self.converter.request(key, source[0], plan, source[2], item["id"])
+            if state is None:
+                continue
+            self._apply_conversion_state(item, state)
+            started.append(item["id"])
+        if started:
+            self._bump_revision()
+            if self.on_conversion_change:
+                self.on_conversion_change(started, False)
+        return started
+
+    def start_conversion(self, item_id):
+        item = self._find_item(item_id)
+        if item is None or item.get("type") != "video":
+            return False, "Item not found"
+        key = self.conversion_keys.get(item_id)
+        source = self.conversion_sources.get(key)
+        if source is None:
+            return False, "This file does not need a conversion"
+        sharing = [other_id for other_id, other_key in list(self.conversion_keys.items()) if other_key == key]
+        if any(self._is_on_air(other_id) for other_id in sharing):
+            return False, "The item is on air"
+        state = self.converter.request(key, source[0], source[1], source[2], item_id, manual=True, restart=True)
+        if state is None:
+            return False, "The converted copy is in use"
+        for other_id in sharing:
+            if other_id != item_id:
+                self.converter.attach(key, other_id)
+        for other in list(self.playlist):
+            if other["id"] in sharing:
+                self._apply_conversion_state(other, state)
+        self._bump_revision()
+        return True, None
+
+    def cancel_conversion(self, item_id):
+        key = self.conversion_keys.get(item_id)
+        if key is None:
+            return False
+        return self.converter.cancel(key)
+
+    def update_conversion_settings(self, **settings):
+        result = self.converter.update_settings(**settings)
+        self.queue_pending_conversions()
+        return result
+
+    def resolve_stream_path(self, item):
+        conversion = item.get("conversion") or {}
+        if conversion.get("status") == "done":
+            key = self.conversion_keys.get(item["id"])
+            path = self.converter.resolve(key) if key else None
+            if path:
+                return path, True
+        return item.get("location"), False
 
     def insert_stop_event(self, insert_index):
         item = {
@@ -326,7 +538,8 @@ class PlaylistManager:
             "start_time": None,
             "playability": "ok",
             "issues": [],
-            "file_signature": ""
+            "file_signature": "",
+            "conversion": empty_conversion()
         }
 
         self.next_id += 1
@@ -353,6 +566,7 @@ class PlaylistManager:
             "playability": "ok",
             "issues": [],
             "file_signature": "",
+            "conversion": empty_conversion(),
             "note": note
         }
 
@@ -381,6 +595,7 @@ class PlaylistManager:
             "playability": "ok",
             "issues": [],
             "file_signature": "",
+            "conversion": empty_conversion(),
             "obs_scene": obs_scene,
             "obs_source": obs_source,
             "obs_action": obs_action,
@@ -448,6 +663,7 @@ class PlaylistManager:
                 self._evict_cache_entries(filepath)
 
         if item_to_remove is not None:
+            self._forget_conversion(item_id)
             self._bump_revision()
 
         if self.is_playing:
@@ -473,6 +689,10 @@ class PlaylistManager:
         self.absolute_schedule = {}
         self.playlist_start_time = None
         self.validation_cache = {}
+        self.conversion_keys = {}
+        self.conversion_sources = {}
+        self.base_states = {}
+        self.converter.cancel_all()
         self._bump_revision()
         return True
 
@@ -546,7 +766,7 @@ class PlaylistManager:
             self.current_index = 0
 
         current_item = self.get_current_item()
-        if current_item and (current_item.get("status") == "corrupted" or current_item.get("playability") == "unsupported"):
+        if current_item and (current_item.get("status") == "corrupted" or current_item.get("playability") in SKIPPED_PLAYABILITY):
             self.next()
             return
 
@@ -608,7 +828,7 @@ class PlaylistManager:
                 return None
             if item["type"] in ["note", "obs"]:
                 continue
-            if item.get("status") == "corrupted" or item.get("playability") == "unsupported":
+            if item.get("status") == "corrupted" or item.get("playability") in SKIPPED_PLAYABILITY:
                 continue
             if item["type"] in ["video", "image"]:
                 return item
@@ -675,7 +895,7 @@ class PlaylistManager:
                         self.on_obs_event(next_item)
                     continue
 
-                if next_item.get("status") == "corrupted" or next_item.get("playability") == "unsupported":
+                if next_item.get("status") == "corrupted" or next_item.get("playability") in SKIPPED_PLAYABILITY:
                     continue
 
                 if next_item["type"] in ["video", "image"]:
@@ -773,10 +993,15 @@ class PlaylistManager:
         for item in self.playlist:
             if item["id"] == item_id and item.get("location"):
                 self._evict_cache_entries(item["location"])
+                conversion = item.get("conversion") or {}
                 item["status"] = "validating"
                 item["duration_formatted"] = "Validating..."
                 item["issues"] = []
-                item["playability"] = "ok"
+                if conversion.get("status") in ACTIVE_STATUSES:
+                    item["playability"] = "preparing"
+                else:
+                    item["playability"] = "ok"
+                    item["conversion"] = empty_conversion()
                 self._bump_revision()
                 self.validation_executor.submit(self._validate_item_async, item)
                 return True
@@ -809,6 +1034,7 @@ class PlaylistManager:
 
     def shutdown(self):
         self.running = False
+        self.converter.shutdown()
         try:
             self.validation_executor.shutdown(wait=False, cancel_futures=True)
         except TypeError:
@@ -915,8 +1141,9 @@ class PlaylistManager:
 
         for idx in range(self.current_index, len(self.playlist)):
             item = self.playlist[idx]
+            skipped = idx > self.current_index and item["type"] == "video" and is_skipped_on_air(item)
 
-            if item["type"] == "video" and item.get("duration"):
+            if item["type"] == "video" and item.get("duration") and not skipped:
                 self.absolute_schedule[item["id"]] = {
                     "start": current_time,
                     "end": current_time + timedelta(seconds=item["duration"]),
@@ -924,7 +1151,7 @@ class PlaylistManager:
                     "next_start": current_time + timedelta(seconds=item["duration"])
                 }
                 current_time += timedelta(seconds=item["duration"])
-            elif item["type"] in ["stop", "note", "obs"]:
+            elif item["type"] in ["stop", "note", "obs"] or skipped:
                 self.absolute_schedule[item["id"]] = {
                     "start": current_time,
                     "end": current_time,
@@ -1020,7 +1247,7 @@ class PlaylistManager:
                     formatted_time = current_time.strftime("%I:%M:%S %p").lstrip("0")
                     item["start_time"] = formatted_time
 
-                    if item["type"] == "video" and item.get("duration"):
+                    if item["type"] == "video" and item.get("duration") and not is_skipped_on_air(item):
                         current_time += timedelta(seconds=item["duration"])
                     elif item["type"] in ["note", "obs"]:
                         pass
