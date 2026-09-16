@@ -1,5 +1,10 @@
 import React, { useState, useEffect } from 'react'
 
+const AUDIO_THROTTLE_MS = 120
+const AUDIO_STEP = 4
+const OUTPUT_AUDIO_TIMEOUT_MS = 2000
+const OUTPUT_AUDIO_CHECK_MS = 500
+
 const getVuColor = (level) => {
   if (level < 60) return 'var(--success)'
   if (level < 80) return 'var(--warning)'
@@ -46,27 +51,62 @@ const getStatus = (item) => {
   return { text: 'OK', color: 'var(--success)', title: '' }
 }
 
-const Preview = ({ currentItem, isPlaying }) => {
+const Preview = ({ currentItem, isPlaying, decoding = true, lowPower = false, countdown = '', onResumePreview, audioLevelSource = null }) => {
   const [audioLevel, setAudioLevel] = useState(0)
+  const [outputAudioLive, setOutputAudioLive] = useState(false)
 
   useEffect(() => {
+    if (!decoding) return undefined
+    let lastAt = 0
     const handleMessage = (event) => {
-      if (event.data && event.data.type === 'flowair-audio-level') {
-        const level = Math.round(event.data.level || 0)
+      if (!event.data || event.data.type !== 'flowair-audio-level') return
+      const level = Math.round(event.data.level || 0)
+      if (!lowPower) {
         setAudioLevel(prev => (prev === level ? prev : level))
+        return
       }
+      const now = Date.now()
+      if (now - lastAt < AUDIO_THROTTLE_MS) return
+      lastAt = now
+      const stepped = Math.min(100, Math.round(level / AUDIO_STEP) * AUDIO_STEP)
+      setAudioLevel(prev => (prev === stepped ? prev : stepped))
     }
     window.addEventListener('message', handleMessage)
     return () => window.removeEventListener('message', handleMessage)
-  }, [])
-
-  const hasAudio = !!(isPlaying && currentItem && currentItem.type === 'video')
+  }, [decoding, lowPower])
 
   useEffect(() => {
-    if (!hasAudio) {
+    setAudioLevel(0)
+    setOutputAudioLive(false)
+    if (decoding || !audioLevelSource) return undefined
+    let lastAt = 0
+    const unsubscribe = audioLevelSource.subscribe((value) => {
+      lastAt = Date.now()
+      const level = Math.max(0, Math.min(100, Math.round(Number(value) || 0)))
+      const stepped = Math.min(100, Math.round(level / AUDIO_STEP) * AUDIO_STEP)
+      setOutputAudioLive(true)
+      setAudioLevel(prev => (prev === stepped ? prev : stepped))
+    })
+    const timer = setInterval(() => {
+      if (Date.now() - lastAt < OUTPUT_AUDIO_TIMEOUT_MS) return
+      setOutputAudioLive(false)
+      setAudioLevel(0)
+    }, OUTPUT_AUDIO_CHECK_MS)
+    return () => {
+      unsubscribe()
+      clearInterval(timer)
+    }
+  }, [audioLevelSource, decoding])
+
+  const previewAudio = !!(decoding && isPlaying && currentItem && currentItem.type === 'video')
+  const meterAvailable = decoding || outputAudioLive
+  const hasAudio = decoding ? previewAudio : outputAudioLive
+
+  useEffect(() => {
+    if (decoding && !previewAudio) {
       setAudioLevel(0)
     }
-  }, [hasAudio])
+  }, [decoding, previewAudio])
 
   const status = getStatus(currentItem)
   const bitrateTag = currentItem && currentItem.bitrate ? getBitrateTag(currentItem.bitrate) : null
@@ -82,12 +122,28 @@ const Preview = ({ currentItem, isPlaying }) => {
         </div>
 
         <div style={styles.videoArea}>
-          <iframe
-            src="http://localhost:8000/player?muted=1"
-            style={styles.iframe}
-            title="Player Preview"
-            allow="autoplay"
-          />
+          {decoding ? (
+            <iframe
+              src="http://localhost:8000/player?muted=1"
+              style={styles.iframe}
+              title="Player Preview"
+              allow="autoplay"
+            />
+          ) : (
+            <div style={styles.pausedPanel}>
+              <span style={styles.pausedBadge}>PREVIEW PAUSED - OUTPUT IS LIVE</span>
+              <span style={styles.pausedName} title={currentItem ? currentItem.name : ''}>
+                {currentItem ? currentItem.name : 'Nothing on air'}
+              </span>
+              <span style={styles.pausedCountdown}>{countdown || '--:--'}</span>
+              <span style={styles.pausedNote}>
+                This PC decodes the picture once, on the output screen. Decoding it here as well is what makes playback stutter.
+              </span>
+              <button style={styles.pausedButton} onClick={onResumePreview}>
+                Show the preview anyway
+              </button>
+            </div>
+          )}
         </div>
 
         <div style={styles.infoSection}>
@@ -127,16 +183,30 @@ const Preview = ({ currentItem, isPlaying }) => {
           </div>
           <div style={styles.audioRow}>
             <span style={styles.label}>Audio</span>
-            <div style={styles.vuMeterContainer}>
-              <div style={{
-                height: '100%',
-                borderRadius: '999px',
-                transition: 'width 0.08s linear, background 0.12s ease',
-                width: `${hasAudio ? audioLevel : 0}%`,
-                background: getVuColor(audioLevel)
-              }} />
-            </div>
-            <span style={styles.vuLevel}>{hasAudio ? `${audioLevel}%` : '--%'}</span>
+            {meterAvailable ? (
+              <>
+                <div style={styles.vuMeterContainer}>
+                  <div style={{
+                    height: '100%',
+                    borderRadius: '999px',
+                    transition: 'width 0.08s linear, background 0.12s ease',
+                    width: `${hasAudio ? audioLevel : 0}%`,
+                    background: getVuColor(audioLevel)
+                  }} />
+                </div>
+                <span style={styles.vuLevel}>{hasAudio ? `${audioLevel}%` : '--%'}</span>
+              </>
+            ) : (
+              <>
+                <span
+                  style={styles.vuUnavailable}
+                  title="While the preview is paused the level comes from the fullscreen output window. Nothing has arrived in the last two seconds, so the meter reads nothing instead of zero."
+                >
+                  Waiting for the output window
+                </span>
+                <span style={styles.vuLevel}>N/A</span>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -199,6 +269,61 @@ const styles = {
     top: 0,
     left: 0
   },
+  pausedPanel: {
+    width: '100%',
+    height: '100%',
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: '8px',
+    padding: '14px 18px',
+    textAlign: 'center',
+    background: 'var(--bg-layer-1)'
+  },
+  pausedBadge: {
+    fontSize: '10px',
+    fontWeight: '700',
+    letterSpacing: '0.8px',
+    color: 'var(--warning-text)',
+    background: 'rgba(224, 179, 65, 0.14)',
+    border: '1px solid rgba(224, 179, 65, 0.35)',
+    borderRadius: '999px',
+    padding: '3px 10px'
+  },
+  pausedName: {
+    maxWidth: '100%',
+    fontSize: '13px',
+    fontWeight: '600',
+    color: 'var(--text-primary)',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap'
+  },
+  pausedCountdown: {
+    fontSize: '30px',
+    fontWeight: '600',
+    color: 'var(--accent)',
+    fontFamily: 'var(--font-mono)',
+    fontVariantNumeric: 'tabular-nums',
+    letterSpacing: '1px',
+    lineHeight: 1
+  },
+  pausedNote: {
+    fontSize: '11px',
+    color: 'var(--text-tertiary)',
+    lineHeight: '1.45',
+    maxWidth: '340px'
+  },
+  pausedButton: {
+    padding: '5px 12px',
+    background: 'var(--bg-layer-3)',
+    border: '1px solid var(--stroke-strong)',
+    borderRadius: 'var(--radius)',
+    color: 'var(--text-secondary)',
+    fontSize: '11px',
+    fontWeight: '600'
+  },
   infoSection: {
     padding: '12px',
     background: 'var(--bg-layer-1)'
@@ -256,6 +381,16 @@ const styles = {
     borderRadius: '999px',
     overflow: 'hidden',
     border: '1px solid var(--stroke)'
+  },
+  vuUnavailable: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: '10px',
+    color: 'var(--text-quaternary)',
+    lineHeight: '1.3',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap'
   },
   vuLevel: {
     fontSize: '11px',

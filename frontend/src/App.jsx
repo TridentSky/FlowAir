@@ -35,8 +35,13 @@ const INSTALL_FAILURE_MESSAGES = {
 
 const ENGINE_OUTPUT_KEYS = ['resolution', 'aspectRatio', 'quality', 'scalingMode', 'networkStreamingEnabled', 'audioDeviceLabel']
 
+const PERFORMANCE_MODE_KEY = 'flowair.performanceMode'
+const PERFORMANCE_MODES = ['auto', 'on', 'off']
+const DIAGNOSTICS_DISMISS_KEY = 'flowair.diagnosticsDismissed'
+
 const IPC_CHANNELS = [
   'output-window-closed',
+  'output-window-opened',
   'displays-changed',
   'backend-restarted',
   'update-available',
@@ -421,6 +426,101 @@ const formatDate = (date) => {
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
+const DEFAULT_DIAGNOSTICS = {
+  gpu: { vendor: '', model: '', driverVersion: '', videoDecode: 'unknown', compositing: 'unknown', rasterization: 'unknown', accelerationDisabled: false },
+  system: { platform: '', release: '', arch: '', cpuModel: '', cpuCores: 0, totalMemoryMb: 0, freeMemoryMb: 0 },
+  app: { version: APP_VERSION, engineVersion: '', electron: '', chrome: '' },
+  health: { level: 'ok', reasons: [] },
+  text: ''
+}
+
+const FEATURE_LABELS = {
+  enabled: 'Hardware accelerated',
+  software: 'Software (processor)',
+  disabled: 'Disabled',
+  unknown: 'Unknown'
+}
+
+const FEATURE_COLORS = {
+  enabled: 'var(--success)',
+  software: 'var(--warning-text)',
+  disabled: 'var(--danger-text)',
+  unknown: 'var(--text-tertiary)'
+}
+
+const featureState = (value) => (FEATURE_LABELS[value] ? value : 'unknown')
+
+const normalizeDiagnostics = (raw) => {
+  if (!raw || typeof raw !== 'object') return null
+  const health = raw.health && typeof raw.health === 'object' ? raw.health : {}
+  const level = health.level === 'critical' || health.level === 'warning' ? health.level : 'ok'
+  return {
+    gpu: { ...DEFAULT_DIAGNOSTICS.gpu, ...(raw.gpu || {}) },
+    system: { ...DEFAULT_DIAGNOSTICS.system, ...(raw.system || {}) },
+    app: { ...DEFAULT_DIAGNOSTICS.app, ...(raw.app || {}) },
+    health: { level, reasons: Array.isArray(health.reasons) ? health.reasons.filter(reason => typeof reason === 'string' && reason) : [] },
+    text: typeof raw.text === 'string' ? raw.text : ''
+  }
+}
+
+const diagnosticsSignature = (diagnostics) => (
+  diagnostics ? `${diagnostics.health.level}|${diagnostics.health.reasons.join('|')}` : ''
+)
+
+const loadPerformanceMode = () => {
+  const saved = localStorage.getItem(PERFORMANCE_MODE_KEY)
+  return PERFORMANCE_MODES.includes(saved) ? saved : 'auto'
+}
+
+const parseDurationSeconds = (value) => {
+  if (!value || typeof value !== 'string') return 0
+  const parts = value.split(':')
+  if (parts.length !== 3) return 0
+  const hours = parseInt(parts[0], 10)
+  const minutes = parseInt(parts[1], 10)
+  const seconds = parseInt(parts[2], 10)
+  if (Number.isNaN(hours) || Number.isNaN(minutes) || Number.isNaN(seconds)) return 0
+  return hours * 3600 + minutes * 60 + seconds
+}
+
+const formatRemaining = (item, elapsed) => {
+  if (!item) return '--:--'
+  const total = parseDurationSeconds(item.duration_formatted) || Math.floor(Number(item.duration) || 0)
+  if (total <= 0) return '--:--'
+  const remaining = Math.max(0, total - Math.floor(elapsed))
+  const minutes = String(Math.floor((remaining % 3600) / 60)).padStart(2, '0')
+  const seconds = String(remaining % 60).padStart(2, '0')
+  if (remaining >= 3600) return `${Math.floor(remaining / 3600)}:${minutes}:${seconds}`
+  return `${minutes}:${seconds}`
+}
+
+const formatMemoryMb = (value) => {
+  const megabytes = Number(value) || 0
+  if (megabytes <= 0) return 'Unknown'
+  if (megabytes >= 1024) return `${(megabytes / 1024).toFixed(1)} GB`
+  return `${Math.round(megabytes)} MB`
+}
+
+const orUnknown = (value) => {
+  const text = value === 0 ? '0' : String(value || '').trim()
+  return text ? text : 'Unknown'
+}
+
+const createAudioLevelSource = () => {
+  const listeners = new Set()
+  return {
+    subscribe(listener) {
+      listeners.add(listener)
+      return () => {
+        listeners.delete(listener)
+      }
+    },
+    publish(level) {
+      listeners.forEach(listener => listener(level))
+    }
+  }
+}
+
 const MemoPlaylist = React.memo(Playlist)
 const MemoPreview = React.memo(Preview)
 const MemoControls = React.memo(Controls)
@@ -580,6 +680,14 @@ const App = () => {
   const [availableDisplays, setAvailableDisplays] = useState([])
   const [audioDevices, setAudioDevices] = useState([])
   const [outputWindowActive, setOutputWindowActive] = useState(false)
+  const [diagnostics, setDiagnostics] = useState(null)
+  const [performanceMode, setPerformanceMode] = useState(loadPerformanceMode)
+  const [previewOverride, setPreviewOverride] = useState(false)
+  const [diagnosticsDismissed, setDiagnosticsDismissed] = useState(() => localStorage.getItem(DIAGNOSTICS_DISMISS_KEY) || '')
+  const [hardwareAcceleration, setHardwareAcceleration] = useState(true)
+  const [hardwareAccelerationPending, setHardwareAccelerationPending] = useState(false)
+  const [audioLevelSource] = useState(createAudioLevelSource)
+  const performanceAutoLogged = useRef('')
   const [networkInfo, setNetworkInfo] = useState({ local_ip: '127.0.0.1', port: 8000, player_url: 'http://127.0.0.1:8000/player' })
 
   const [updateState, setUpdateState] = useState({
@@ -840,7 +948,13 @@ const App = () => {
         return
       }
       api.getPlaylist()
-        .then(state => applyPlaylistState(state))
+        .then(state => {
+          applyPlaylistState(state)
+          const pending = state && Array.isArray(state.playlist) && state.playlist.some(item => item.status === 'validating')
+          if (!pending || validationRefreshRetries.current >= VALIDATION_REFRESH_RETRIES) return
+          validationRefreshRetries.current += 1
+          scheduleValidationRefresh(true)
+        })
         .catch(() => {})
     }, VALIDATION_REFRESH_MS)
   }, [applyPlaylistState])
@@ -882,6 +996,20 @@ const App = () => {
     }
   }, [])
 
+  const loadDiagnostics = useCallback(async (options) => {
+    const electron = getElectron()
+    if (!electron) return
+    const refresh = Boolean(options && options.refresh)
+    const adoptAcceleration = Boolean(options && options.adoptAcceleration)
+    try {
+      const report = normalizeDiagnostics(await electron.ipcRenderer.invoke('system:diagnostics', { refresh }))
+      if (!report) return
+      setDiagnostics(report)
+      if (adoptAcceleration) setHardwareAcceleration(!report.gpu.accelerationDisabled)
+    } catch (error) {
+    }
+  }, [])
+
   const restoreOutputWindow = useCallback(async () => {
     const electron = getElectron()
     if (!electron) return
@@ -914,6 +1042,7 @@ const App = () => {
     loadPlaylist()
     loadDisplays()
     loadNetworkInfo()
+    loadDiagnostics({ adoptAcceleration: true })
     restoreOutputWindow()
 
     api.updateOutputSettings(outputSettingsRef.current).catch(() => {})
@@ -984,6 +1113,8 @@ const App = () => {
         if (affected && playability === 'unsupported') {
           addLog(`Playback issue: ${describeItem(affected)}`, 'warning')
         }
+      } else if (data.type === 'audio_level') {
+        audioLevelSource.publish(typeof data.level === 'number' ? data.level : 0)
       } else if (data.type === 'file_missing') {
         addLog(`File missing: ${data.message}`, 'error')
       }
@@ -1003,6 +1134,9 @@ const App = () => {
         } else {
           addLog('External output closed', 'info')
         }
+      })
+      ipcRenderer.on('output-window-opened', () => {
+        setOutputWindowActive(true)
       })
       ipcRenderer.on('displays-changed', () => {
         loadDisplays()
@@ -1086,7 +1220,7 @@ const App = () => {
         IPC_CHANNELS.forEach(channel => electron.ipcRenderer.removeAllListeners(channel))
       }
     }
-  }, [addLog, applyPlaylistState, clearUndoStack, loadDisplays, loadNetworkInfo, loadPlaylist, restoreOutputWindow])
+  }, [addLog, applyPlaylistState, audioLevelSource, clearUndoStack, loadDiagnostics, loadDisplays, loadNetworkInfo, loadPlaylist, restoreOutputWindow])
 
   useEffect(() => {
     if (recoverySession && playlist.length > 0) {
@@ -2377,6 +2511,77 @@ const App = () => {
     setLogCollapsed(prev => !prev)
   }, [])
 
+  const handlePerformanceModeChange = useCallback((mode) => {
+    if (!PERFORMANCE_MODES.includes(mode)) return
+    localStorage.setItem(PERFORMANCE_MODE_KEY, mode)
+    setPerformanceMode(mode)
+    setPreviewOverride(false)
+  }, [])
+
+  const handleResumePreview = useCallback(() => {
+    setPreviewOverride(true)
+  }, [])
+
+  const handleOpenDiagnostics = useCallback(() => {
+    setSettingsTab('diagnostics')
+    setShowOutputSettings(true)
+  }, [])
+
+  const handleDismissDiagnostics = useCallback(() => {
+    const signature = diagnosticsSignature(diagnostics)
+    localStorage.setItem(DIAGNOSTICS_DISMISS_KEY, signature)
+    setDiagnosticsDismissed(signature)
+  }, [diagnostics])
+
+  const handleCopyDiagnostics = useCallback(() => {
+    const text = diagnostics ? diagnostics.text : ''
+    const fallback = () => {
+      if (!text) {
+        flashSettingsFeedback('Not copied', 'error')
+        return
+      }
+      navigator.clipboard.writeText(text)
+        .then(() => flashSettingsFeedback('Copied'))
+        .catch(() => flashSettingsFeedback('Not copied', 'error'))
+    }
+    const electron = getElectron()
+    if (!electron) {
+      fallback()
+      return
+    }
+    electron.ipcRenderer.invoke('system:copy-diagnostics')
+      .then(result => {
+        if (result && result.success === false) {
+          fallback()
+          return
+        }
+        flashSettingsFeedback('Copied')
+      })
+      .catch(fallback)
+  }, [diagnostics, flashSettingsFeedback])
+
+  const handleHardwareAccelerationChange = useCallback((enabled) => {
+    const electron = getElectron()
+    if (!electron) return
+    setHardwareAcceleration(enabled)
+    electron.ipcRenderer.invoke('system:set-hardware-acceleration', { enabled })
+      .then(result => {
+        if (result && result.success === false) {
+          setHardwareAcceleration(typeof result.enabled === 'boolean' ? result.enabled : !enabled)
+          flashSettingsFeedback('Not saved', 'error')
+          return
+        }
+        if (result && typeof result.enabled === 'boolean') setHardwareAcceleration(result.enabled)
+        setHardwareAccelerationPending(!result || result.restartRequired !== false)
+        flashSettingsFeedback('Saved')
+        loadDiagnostics({ refresh: true })
+      })
+      .catch(() => {
+        setHardwareAcceleration(!enabled)
+        flashSettingsFeedback('Not saved', 'error')
+      })
+  }, [flashSettingsFeedback, loadDiagnostics])
+
   const handleOutputSettingsChange = useCallback((key, value) => {
     setOutputSettings(prev => {
       const updated = { ...prev, [key]: value }
@@ -3090,6 +3295,20 @@ const App = () => {
     }
   }, [addLog])
 
+  const handleRevalidateItem = useCallback(async (itemId) => {
+    try {
+      const result = await api.revalidateItem(itemId)
+      if (!result || result.success === false) {
+        addLog('This item can no longer be checked', 'warning')
+        return
+      }
+      await loadPlaylist()
+      scheduleValidationRefresh()
+    } catch (error) {
+      addLog('The item could not be checked again', 'error')
+    }
+  }, [addLog, loadPlaylist, scheduleValidationRefresh])
+
   const handleContainerClick = useCallback((e) => {
     if (confirmDialog || recoverySession || showNoteInput || showOBSEventModal || showOutputSettings || showUpdatePanel) return
 
@@ -3114,6 +3333,30 @@ const App = () => {
   }, [audioDevices])
 
   const audioDeviceMissing = Boolean(outputSettings.audioDeviceLabel) && audioDeviceOptions.length > 0 && !audioDeviceOptions.includes(outputSettings.audioDeviceLabel)
+
+  const diagnosticsLevel = diagnostics ? diagnostics.health.level : 'ok'
+  const performanceActive = performanceMode === 'on' || (performanceMode === 'auto' && diagnosticsLevel !== 'ok')
+  const previewSuspended = performanceActive && outputWindowActive && !previewOverride
+  const previewCountdown = previewSuspended ? formatRemaining(currentItem, serverElapsed) : ''
+
+  useEffect(() => {
+    if (!outputWindowActive) setPreviewOverride(false)
+  }, [outputWindowActive])
+
+  useEffect(() => {
+    if (performanceMode !== 'auto' || !previewSuspended) return
+    const signature = diagnosticsSignature(diagnostics)
+    if (performanceAutoLogged.current === signature) return
+    performanceAutoLogged.current = signature
+    addLog('Performance mode on: the preview stopped decoding while the output window is live', 'warning')
+  }, [addLog, diagnostics, performanceMode, previewSuspended])
+
+  useEffect(() => {
+    if (!showOutputSettings || settingsTab !== 'diagnostics') return
+    loadDiagnostics({ refresh: true })
+  }, [loadDiagnostics, settingsTab, showOutputSettings])
+
+  const diagnosticsBannerVisible = diagnosticsLevel !== 'ok' && diagnosticsDismissed !== diagnosticsSignature(diagnostics)
 
   const updateAvailable = updateState.status === 'available' || updateState.status === 'downloading' || updateState.status === 'ready' || updateState.status === 'installing'
   const releaseNotes = (updateState.notes || '').slice(0, MAX_RELEASE_NOTES)
@@ -3181,91 +3424,122 @@ const App = () => {
         </div>
       </div>
 
-      {showUpdatePanel && (
-        <div style={styles.updatePanel} className="update-panel">
-          <div style={styles.updatePanelHeader}>
-            <span style={styles.updatePanelTitle}>
-              {updateAvailable ? `FlowAir v${updateState.version}` : 'Software updates'}
+      {diagnosticsBannerVisible && (
+        <div style={diagnosticsLevel === 'critical' ? { ...styles.diagBanner, ...styles.diagBannerCritical } : styles.diagBanner}>
+          <span style={styles.diagBannerIcon}><Icon name="alert" size={16} /></span>
+          <div style={styles.diagBannerText}>
+            <span style={styles.diagBannerTitle}>
+              {diagnosticsLevel === 'critical'
+                ? 'This PC cannot play video smoothly'
+                : 'This PC may not play video smoothly'}
             </span>
-            <button
-              className="close-button-hover"
-              style={styles.closeButton}
-              onClick={() => setShowUpdatePanel(false)}
-              title="Close (Esc)"
-            >
-              <Icon name="close" size={14} />
-            </button>
+            <span style={styles.diagBannerBody}>
+              {diagnostics && diagnostics.health.reasons.length > 0
+                ? diagnostics.health.reasons[0]
+                : 'Video is being decoded by the processor because no graphics driver is active. Playback may stutter and the countdown may freeze. Install the graphics driver from the support page of the PC maker.'}
+            </span>
           </div>
+          <button className="btn-subtle" style={styles.diagBannerButton} onClick={handleOpenDiagnostics}>
+            Details
+          </button>
+          <button
+            className="close-button-hover"
+            style={styles.closeButton}
+            onClick={handleDismissDiagnostics}
+            title="Hide this message until the diagnosis changes"
+          >
+            <Icon name="close" size={14} />
+          </button>
+        </div>
+      )}
 
-          <div style={styles.updatePanelBody}>
-            {!updateAvailable && updateState.status !== 'error' && (
-              <div style={styles.updateText}>FlowAir is up to date.</div>
-            )}
-
-            {updateState.status === 'available' && (
-              <>
-                <div style={styles.updateText}>A new version is available. Downloading is safe while on air, installing is not.</div>
-                {releaseNotes && <div style={styles.updateNotes}>{releaseNotes}</div>}
-              </>
-            )}
-
-            {updateState.status === 'downloading' && (
-              <>
-                <div style={styles.updateText}>Downloading... {updateProgress}%</div>
-                <div style={styles.progressTrack}>
-                  <div style={{ ...styles.progressFill, width: `${updateProgress}%` }} />
-                </div>
-              </>
-            )}
-
-            {updateState.status === 'ready' && (
-              <div style={styles.updateText}>
-                The update is downloaded. FlowAir closes during the installation and the channel is off air for about two minutes.
-              </div>
-            )}
-
-            {updateState.status === 'installing' && (
-              <div style={styles.updateText}>Installing... FlowAir closes as soon as the installer starts.</div>
-            )}
-
-            {(updateState.error || updateState.status === 'error') && (
-              <div style={styles.updateError}>{updateState.error || 'The update could not be downloaded.'}</div>
-            )}
-
-            <label style={styles.updateToggle}>
-              <input
-                type="checkbox"
-                checked={updateState.enabled !== false}
-                onChange={(e) => setUpdateChecksEnabled(e.target.checked)}
-                style={styles.checkbox}
-              />
-              Check for updates automatically
-            </label>
-            <div style={styles.updateHint}>
-              Only checks and tells you here. Nothing is downloaded or installed unless you ask for it.
+      {showUpdatePanel && (
+        <div style={styles.flyoutAnchor}>
+          <div style={styles.updatePanel} className="update-panel">
+            <div style={styles.updatePanelHeader}>
+              <span style={styles.updatePanelTitle}>
+                {updateAvailable ? `FlowAir v${updateState.version}` : 'Software updates'}
+              </span>
+              <button
+                className="close-button-hover"
+                style={styles.closeButton}
+                onClick={() => setShowUpdatePanel(false)}
+                title="Close (Esc)"
+              >
+                <Icon name="close" size={14} />
+              </button>
             </div>
-          </div>
 
-          <div style={styles.updatePanelButtons}>
-            {updateState.status === 'available' && (
-              <button style={{ ...styles.modalButton, ...styles.modalButtonPrimary }} onClick={startUpdateDownload}>Download</button>
-            )}
-            {updateState.status === 'downloading' && (
-              <button style={{ ...styles.modalButton, ...styles.modalButtonCancel }} onClick={cancelUpdateDownload}>Cancel</button>
-            )}
-            {updateState.status === 'ready' && (
-              <button style={{ ...styles.modalButton, ...styles.modalButtonPrimary }} onClick={installUpdate}>Install now</button>
-            )}
-            {updateState.status === 'error' && (
-              <button style={{ ...styles.modalButton, ...styles.modalButtonPrimary }} onClick={startUpdateDownload}>Retry</button>
-            )}
-            {updateState.url && (
-              <button style={{ ...styles.modalButton, ...styles.modalButtonCancel }} onClick={openReleasePage}>Release page</button>
-            )}
-            {updateAvailable && updateState.status !== 'installing' && (
-              <button className="btn-subtle" style={styles.updateSubtleButton} onClick={dismissUpdateVersion}>Don't show this version again</button>
-            )}
-            <button style={{ ...styles.modalButton, ...styles.modalButtonCancel }} onClick={() => setShowUpdatePanel(false)}>Later</button>
+            <div style={styles.updatePanelBody}>
+              {!updateAvailable && updateState.status !== 'error' && (
+                <div style={styles.updateText}>FlowAir is up to date.</div>
+              )}
+
+              {updateState.status === 'available' && (
+                <>
+                  <div style={styles.updateText}>A new version is available. Downloading is safe while on air, installing is not.</div>
+                  {releaseNotes && <div style={styles.updateNotes}>{releaseNotes}</div>}
+                </>
+              )}
+
+              {updateState.status === 'downloading' && (
+                <>
+                  <div style={styles.updateText}>Downloading... {updateProgress}%</div>
+                  <div style={styles.progressTrack}>
+                    <div style={{ ...styles.progressFill, width: `${updateProgress}%` }} />
+                  </div>
+                </>
+              )}
+
+              {updateState.status === 'ready' && (
+                <div style={styles.updateText}>
+                  The update is downloaded. FlowAir closes during the installation and the channel is off air for about two minutes.
+                </div>
+              )}
+
+              {updateState.status === 'installing' && (
+                <div style={styles.updateText}>Installing... FlowAir closes as soon as the installer starts.</div>
+              )}
+
+              {(updateState.error || updateState.status === 'error') && (
+                <div style={styles.updateError}>{updateState.error || 'The update could not be downloaded.'}</div>
+              )}
+
+              <label style={styles.updateToggle}>
+                <input
+                  type="checkbox"
+                  checked={updateState.enabled !== false}
+                  onChange={(e) => setUpdateChecksEnabled(e.target.checked)}
+                  style={styles.checkbox}
+                />
+                Check for updates automatically
+              </label>
+              <div style={styles.updateHint}>
+                Only checks and tells you here. Nothing is downloaded or installed unless you ask for it.
+              </div>
+            </div>
+
+            <div style={styles.updatePanelButtons}>
+              {updateState.status === 'available' && (
+                <button style={{ ...styles.modalButton, ...styles.modalButtonPrimary }} onClick={startUpdateDownload}>Download</button>
+              )}
+              {updateState.status === 'downloading' && (
+                <button style={{ ...styles.modalButton, ...styles.modalButtonCancel }} onClick={cancelUpdateDownload}>Cancel</button>
+              )}
+              {updateState.status === 'ready' && (
+                <button style={{ ...styles.modalButton, ...styles.modalButtonPrimary }} onClick={installUpdate}>Install now</button>
+              )}
+              {updateState.status === 'error' && (
+                <button style={{ ...styles.modalButton, ...styles.modalButtonPrimary }} onClick={startUpdateDownload}>Retry</button>
+              )}
+              {updateState.url && (
+                <button style={{ ...styles.modalButton, ...styles.modalButtonCancel }} onClick={openReleasePage}>Release page</button>
+              )}
+              {updateAvailable && updateState.status !== 'installing' && (
+                <button className="btn-subtle" style={styles.updateSubtleButton} onClick={dismissUpdateVersion}>Don't show this version again</button>
+              )}
+              <button style={{ ...styles.modalButton, ...styles.modalButtonCancel }} onClick={() => setShowUpdatePanel(false)}>Later</button>
+            </div>
           </div>
         </div>
       )}
@@ -3317,6 +3591,7 @@ const App = () => {
             onToggleFollow={handleToggleFollow}
             nextHighlightId={nextHighlightId}
             onOpenLocation={handleOpenLocation}
+            onRevalidateItem={handleRevalidateItem}
             onClearSelection={handleClearSelection}
             searchOpen={searchOpen}
             searchQuery={searchQuery}
@@ -3328,7 +3603,15 @@ const App = () => {
         </div>
 
         <div style={styles.rightPanel}>
-          <MemoPreview currentItem={currentItem} isPlaying={isPlaying} />
+          <MemoPreview
+            currentItem={currentItem}
+            isPlaying={isPlaying}
+            decoding={!previewSuspended}
+            lowPower={performanceActive}
+            countdown={previewCountdown}
+            onResumePreview={handleResumePreview}
+            audioLevelSource={audioLevelSource}
+          />
           {obsSettings.enabled && obsConnected && (
             <div style={styles.obsControlPanel}>
               <div style={styles.obsControlHeader}>
@@ -3633,6 +3916,13 @@ const App = () => {
                 onClick={() => setSettingsTab('shortcuts')}
               >
                 Shortcuts
+              </button>
+              <button
+                className="btn-subtle"
+                style={settingsTab === 'diagnostics' ? { ...styles.tab, ...styles.tabActive } : styles.tab}
+                onClick={() => setSettingsTab('diagnostics')}
+              >
+                Diagnostics
               </button>
             </div>
 
@@ -4070,6 +4360,138 @@ const App = () => {
                 </div>
               )}
 
+              {settingsTab === 'diagnostics' && (
+                <div style={styles.settingSection}>
+                  <div style={styles.settingGroupTitle}>This machine</div>
+                  <div style={styles.settingGroupDesc}>
+                    What FlowAir can see about the graphics and the processor of this PC. Copy it into a support message when
+                    playback is not smooth.
+                  </div>
+
+                  {!diagnostics && (
+                    <div style={styles.settingHint}>Diagnostics are only available inside the FlowAir desktop window.</div>
+                  )}
+
+                  {diagnostics && (
+                    <>
+                      {diagnostics.health.reasons.length > 0 ? (
+                        <div style={styles.settingWarning}>
+                          {diagnostics.health.reasons.map(reason => (
+                            <div key={reason} style={styles.diagReason}>{reason}</div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div style={styles.settingTip}>Graphics acceleration is working on this PC. Nothing to fix here.</div>
+                      )}
+
+                      <div style={styles.diagGrid}>
+                        <div style={styles.diagRow}>
+                          <span style={styles.diagKey}>Graphics</span>
+                          <span style={styles.diagValue}>{orUnknown(`${diagnostics.gpu.vendor} ${diagnostics.gpu.model}`.trim())}</span>
+                        </div>
+                        <div style={styles.diagRow}>
+                          <span style={styles.diagKey}>Driver version</span>
+                          <span style={styles.diagValue}>{orUnknown(diagnostics.gpu.driverVersion)}</span>
+                        </div>
+                        {[
+                          ['Video decode', diagnostics.gpu.videoDecode],
+                          ['Compositing', diagnostics.gpu.compositing],
+                          ['Drawing', diagnostics.gpu.rasterization]
+                        ].map(([label, raw]) => {
+                          const state = featureState(raw)
+                          return (
+                            <div key={label} style={styles.diagRow}>
+                              <span style={styles.diagKey}>{label}</span>
+                              <span style={{ ...styles.diagValue, color: FEATURE_COLORS[state], fontWeight: '600' }}>
+                                {FEATURE_LABELS[state]}
+                              </span>
+                            </div>
+                          )
+                        })}
+                        {[
+                          ['Processor', orUnknown(diagnostics.system.cpuModel)],
+                          ['Cores', orUnknown(diagnostics.system.cpuCores)],
+                          ['Memory', `${formatMemoryMb(diagnostics.system.freeMemoryMb)} free of ${formatMemoryMb(diagnostics.system.totalMemoryMb)}`],
+                          ['System', orUnknown(`${diagnostics.system.platform} ${diagnostics.system.release} ${diagnostics.system.arch}`.trim())],
+                          ['FlowAir', `v${orUnknown(diagnostics.app.version)}`],
+                          ['Playout engine', orUnknown(diagnostics.app.engineVersion)],
+                          ['Electron', orUnknown(diagnostics.app.electron)],
+                          ['Chromium', orUnknown(diagnostics.app.chrome)]
+                        ].map(([label, value]) => (
+                          <div key={label} style={styles.diagRow}>
+                            <span style={styles.diagKey}>{label}</span>
+                            <span style={styles.diagValue}>{value}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+
+                  <div style={styles.settingGroupTitle}>Graphics</div>
+
+                  <div style={styles.settingRow}>
+                    <label style={styles.settingLabel}>
+                      <input
+                        type="checkbox"
+                        checked={hardwareAcceleration}
+                        disabled={!electronAvailable}
+                        onChange={(e) => handleHardwareAccelerationChange(e.target.checked)}
+                        style={styles.checkbox}
+                      />
+                      Hardware acceleration
+                    </label>
+                  </div>
+                  <div style={styles.settingHint}>
+                    Leave this on. Turning it off makes the picture slower on almost every PC, including the fullscreen output that
+                    goes to air. Only turn it off when a broken driver makes the screen tear or go black. It takes effect the next
+                    time FlowAir starts.
+                  </div>
+                  {hardwareAccelerationPending && (
+                    <div style={styles.settingWarning}>Close and open FlowAir to apply the hardware acceleration change.</div>
+                  )}
+
+                  <div style={styles.settingGroupTitle}>Lighter playback</div>
+
+                  <div style={styles.settingRow}>
+                    <label style={styles.settingLabel}>Performance mode</label>
+                    <select
+                      style={styles.settingSelect}
+                      value={performanceMode}
+                      onChange={(e) => handlePerformanceModeChange(e.target.value)}
+                    >
+                      <option value="auto">Auto (on when this PC needs it)</option>
+                      <option value="on">Always on</option>
+                      <option value="off">Off</option>
+                    </select>
+                  </div>
+                  <div style={styles.settingHint}>
+                    Stops the preview from decoding the same clip a second time while the fullscreen output is live. The output
+                    picture, the timing and the playlist never change.
+                  </div>
+                  <div style={styles.settingTip}>
+                    {performanceActive
+                      ? (previewSuspended
+                        ? 'Performance mode is on and the preview is paused. The file name, the countdown and the on-air state stay visible.'
+                        : 'Performance mode is on. The preview pauses as soon as the fullscreen output window is open.')
+                      : 'Performance mode is off. The preview decodes video at the same time as the fullscreen output.'}
+                  </div>
+
+                  <div style={styles.sectionButtonRow}>
+                    {settingsFeedback && (
+                      <span style={settingsFeedback.tone === 'error' ? styles.settingsFeedbackError : styles.settingsFeedback}>
+                        {settingsFeedback.message}
+                      </span>
+                    )}
+                    <button
+                      style={{ ...styles.sectionButton, ...styles.sectionButtonPrimary }}
+                      onClick={handleCopyDiagnostics}
+                    >
+                      Copy diagnostics
+                    </button>
+                  </div>
+                </div>
+              )}
+
             </div>
 
             <div style={styles.settingsFooter}>
@@ -4216,9 +4638,92 @@ const styles = {
     color: 'var(--accent-hover)',
     fontWeight: '600'
   },
+  diagBanner: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '12px',
+    padding: '8px 20px',
+    background: 'rgba(224, 179, 65, 0.12)',
+    borderBottom: '1px solid rgba(224, 179, 65, 0.35)',
+    color: 'var(--warning-text)'
+  },
+  diagBannerCritical: {
+    background: 'var(--danger-soft)',
+    borderBottom: '1px solid rgba(255, 91, 91, 0.4)',
+    color: 'var(--danger-text)'
+  },
+  diagBannerIcon: {
+    display: 'flex',
+    alignItems: 'center',
+    flexShrink: 0
+  },
+  diagBannerText: {
+    flex: 1,
+    minWidth: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '2px'
+  },
+  diagBannerTitle: {
+    fontSize: '12px',
+    fontWeight: '600'
+  },
+  diagBannerBody: {
+    fontSize: '11px',
+    color: 'var(--text-secondary)',
+    lineHeight: '1.45'
+  },
+  diagBannerButton: {
+    flexShrink: 0,
+    padding: '5px 12px',
+    border: '1px solid currentColor',
+    borderRadius: 'var(--radius)',
+    color: 'inherit',
+    fontSize: '11px',
+    fontWeight: '600'
+  },
+  diagGrid: {
+    display: 'flex',
+    flexDirection: 'column',
+    background: 'var(--bg-layer-1)',
+    border: '1px solid var(--stroke)',
+    borderRadius: 'var(--radius)',
+    overflow: 'hidden'
+  },
+  diagRow: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: '16px',
+    padding: '6px 12px',
+    borderBottom: '1px solid var(--stroke-subtle)'
+  },
+  diagKey: {
+    fontSize: '11px',
+    color: 'var(--text-tertiary)',
+    fontWeight: '600',
+    flexShrink: 0
+  },
+  diagValue: {
+    fontSize: '11px',
+    color: 'var(--text-primary)',
+    fontFamily: 'var(--font-mono)',
+    textAlign: 'right',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap'
+  },
+  diagReason: {
+    marginBottom: '4px'
+  },
+  flyoutAnchor: {
+    position: 'relative',
+    height: 0,
+    zIndex: 9000
+  },
   updatePanel: {
     position: 'absolute',
-    top: '62px',
+    top: '4px',
     right: '20px',
     width: '380px',
     background: 'var(--bg-elevated)',
@@ -4367,7 +4872,8 @@ const styles = {
     overflow: 'hidden'
   },
   rightPanel: {
-    width: '380px',
+    width: 'var(--right-panel)',
+    flexShrink: 0,
     background: 'var(--bg-base)',
     borderLeft: '1px solid var(--stroke)',
     display: 'flex',

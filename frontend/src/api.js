@@ -25,6 +25,7 @@ export const api = {
   getPlaylist: () => get('/playlist'),
   addItem: (filepath, insertIndex = null, loop = false) => post('/playlist/add', { filepath, insertIndex, loop: Boolean(loop) }),
   removeItem: (itemId) => post('/playlist/remove', { item_id: itemId }),
+  revalidateItem: (itemId) => post('/playlist/revalidate', { item_id: itemId }),
   duplicateItem: (itemId, insertIndex = null) => post('/playlist/duplicate', { item_id: itemId, insertIndex }),
   restoreItems: (items, position = null) => post('/playlist/restore', { items, position }),
   clearPlaylist: () => post('/playlist/clear'),

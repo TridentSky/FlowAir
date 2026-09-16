@@ -178,6 +178,7 @@ def playlist_message(message_type="playlist_updated", **extra):
         "type": message_type,
         "playlist": playlist_manager.get_playlist(),
         "current_item": playlist_manager.get_current_item(),
+        "next_item": playlist_manager.get_next_playable_item(),
         "is_playing": playlist_manager.is_playing,
         "revision": playlist_manager.revision
     }
@@ -309,6 +310,7 @@ class PlaybackErrorRequest(BaseModel):
     item_id: int
     code: str = ""
     message: str = ""
+    fatal: bool = True
 
 class CueRequest(BaseModel):
     item_id: int
@@ -359,15 +361,41 @@ def forget_connection(websocket):
         active_connections.remove(websocket)
     player_connections.discard(websocket)
 
+async def relay_audio_level(level):
+    if not active_connections:
+        return
+
+    payload = json.dumps({"type": "audio_level", "level": level})
+    for connection in list(active_connections):
+        if connection in player_connections:
+            continue
+        try:
+            await connection.send_text(payload)
+        except Exception:
+            pass
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     active_connections.append(websocket)
-    if websocket.query_params.get("role") == "player":
+    is_player = websocket.query_params.get("role") == "player"
+    if is_player:
         player_connections.add(websocket)
     try:
         while True:
-            await websocket.receive_text()
+            raw = await websocket.receive_text()
+            if not is_player:
+                continue
+            try:
+                incoming = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(incoming, dict) and incoming.get("type") == "audio_level":
+                try:
+                    level = max(0.0, min(100.0, float(incoming.get("level", 0))))
+                except (TypeError, ValueError):
+                    continue
+                await relay_audio_level(level)
     except WebSocketDisconnect:
         forget_connection(websocket)
     except Exception:
@@ -442,6 +470,13 @@ async def restore_items(request: RestoreItemsRequest):
         await broadcast_update(playlist_message())
     return {"success": bool(created), "items": created}
 
+@app.post("/playlist/revalidate")
+async def revalidate_item(request: RemoveItemRequest):
+    success = playlist_manager.mark_for_revalidation(request.item_id)
+    if success:
+        await broadcast_update(item_issue_message(request.item_id))
+    return {"success": success}
+
 @app.post("/playlist/order")
 async def set_playlist_order(request: SetOrderRequest):
     success = playlist_manager.set_order(request.item_ids)
@@ -489,7 +524,8 @@ async def play():
     await broadcast_update({
         "type": "playback_state_changed",
         "is_playing": True,
-        "current_item": playlist_manager.get_current_item()
+        "current_item": playlist_manager.get_current_item(),
+        "next_item": playlist_manager.get_next_playable_item()
     })
     return {"success": True}
 
@@ -499,7 +535,8 @@ async def stop():
     await broadcast_update({
         "type": "playback_state_changed",
         "is_playing": False,
-        "current_item": playlist_manager.get_current_item()
+        "current_item": playlist_manager.get_current_item(),
+        "next_item": playlist_manager.get_next_playable_item()
     })
     return {"success": True}
 
@@ -510,7 +547,8 @@ async def pause():
         "type": "playback_state_changed",
         "is_playing": False,
         "is_paused": True,
-        "current_item": playlist_manager.get_current_item()
+        "current_item": playlist_manager.get_current_item(),
+        "next_item": playlist_manager.get_next_playable_item()
     })
     return {"success": True}
 
@@ -520,6 +558,7 @@ async def next_item():
     await broadcast_update({
         "type": "playback_state_changed",
         "current_item": playlist_manager.get_current_item(),
+        "next_item": playlist_manager.get_next_playable_item(),
         "is_playing": playlist_manager.is_playing
     })
     return {"success": True}
@@ -552,11 +591,11 @@ async def playback_error(request: PlaybackErrorRequest):
     was_current = playlist_manager.get_current_item() is not None and playlist_manager.get_current_item()["id"] == request.item_id
     was_playing = playlist_manager.is_playing
 
-    item = playlist_manager.record_playback_error(request.item_id, request.code, request.message)
+    item = playlist_manager.record_playback_error(request.item_id, request.code, request.message, request.fatal)
     if item is None:
         return {"success": False}
 
-    if was_current and was_playing:
+    if request.fatal and was_current and was_playing:
         playlist_manager.next()
 
     await broadcast_update(item_issue_message(request.item_id))
@@ -717,6 +756,7 @@ async def get_player_state():
 
     return {
         "current_item": current_item,
+        "next_item": playlist_manager.get_next_playable_item(),
         "is_playing": playlist_manager.is_playing,
         "elapsed": max(0, elapsed),
         "volume": playlist_manager.output_volume,
@@ -824,6 +864,7 @@ async def player_page():
     <body>
         <div id="container">
             <video id="player" style="opacity:0;"></video>
+            <video id="standby" style="opacity:0;" muted></video>
             <img id="image" style="display:none;">
         </div>
         <script>
@@ -833,22 +874,37 @@ async def player_page():
             const baseURL = window.location.origin;
             const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
 
-            const video = document.getElementById('player');
+            let video = document.getElementById('player');
+            let standby = document.getElementById('standby');
             const image = document.getElementById('image');
+            const mediaElements = [video, standby];
 
-            video.preload = 'auto';
-            video.playsInline = true;
-            video.autoplay = false;
-            if (isMuted) {
-                video.muted = true;
-            } else {
-                video.muted = false;
+            mediaElements.forEach(function (element) {
+                element.preload = 'auto';
+                element.playsInline = true;
+                element.autoplay = false;
+                element.muted = true;
+            });
+
+            let standbyItemId = null;
+            let standbyReady = false;
+            let currentVolume = 100;
+
+            function applyMuteState() {
+                standby.muted = true;
+                if (!isMuted) {
+                    video.muted = false;
+                    return;
+                }
+                video.muted = !(meterStarted && analyserNode);
             }
 
             let currentItemId = null;
             let currentItemType = null;
             let loadPending = false;
             let loadStartedAt = 0;
+            let lastProgressAt = 0;
+            let lastKnownTime = 0;
             let loadAttempts = 0;
             let wantsPlay = false;
             let pendingStartAt = 0;
@@ -899,35 +955,59 @@ async def player_page():
                 const out = meterSmooth < 2 ? 0 : meterSmooth;
                 if (out === 0 && lastMeterValue === 0) return;
                 lastMeterValue = out;
+
+                if (isOutput) {
+                    if (ws && ws.readyState === 1) {
+                        try {
+                            ws.send(JSON.stringify({ type: 'audio_level', level: out }));
+                        } catch (e) {}
+                    }
+                    return;
+                }
+
                 try {
                     window.parent.postMessage({ type: 'flowair-audio-level', level: out }, '*');
                 } catch (e) {}
             }
 
             function setupAudioMeter() {
-                if (meterStarted || !isMuted) return;
+                if (meterStarted) return;
+                if (!isMuted && !isOutput) return;
+                if (isOutput) {
+                    const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+                    if (!AudioCtxClass || typeof AudioCtxClass.prototype.setSinkId !== 'function') return;
+                }
                 meterStarted = true;
                 try {
                     const AudioCtx = window.AudioContext || window.webkitAudioContext;
                     audioCtx = new AudioCtx();
-                    const sourceNode = audioCtx.createMediaElementSource(video);
                     analyserNode = audioCtx.createAnalyser();
                     analyserNode.fftSize = 1024;
                     meterData = new Float32Array(analyserNode.fftSize);
-                    const gainNode = audioCtx.createGain();
-                    gainNode.gain.value = 0;
-                    sourceNode.connect(analyserNode);
-                    analyserNode.connect(gainNode);
-                    gainNode.connect(audioCtx.destination);
-                    video.muted = false;
+                    mediaElements.forEach(function (element) {
+                        audioCtx.createMediaElementSource(element).connect(analyserNode);
+                    });
+
+                    if (isMuted) {
+                        const gainNode = audioCtx.createGain();
+                        gainNode.gain.value = 0;
+                        analyserNode.connect(gainNode);
+                        gainNode.connect(audioCtx.destination);
+                    } else {
+                        analyserNode.connect(audioCtx.destination);
+                    }
+
+                    applyMuteState();
+                    applySink();
                 } catch (e) {
                     analyserNode = null;
+                    meterStarted = false;
                     video.muted = true;
                 }
             }
 
             function startMeter() {
-                if (!isMuted) return;
+                if (!isMuted && !isOutput) return;
                 setupAudioMeter();
                 resumeAudioCtx();
                 if (analyserNode && !meterRunning) {
@@ -938,12 +1018,21 @@ async def player_page():
 
             function stopMeter() {
                 meterRunning = false;
-                if (lastMeterValue !== 0) {
-                    lastMeterValue = 0;
-                    try {
-                        window.parent.postMessage({ type: 'flowair-audio-level', level: 0 }, '*');
-                    } catch (e) {}
+                if (lastMeterValue === 0) return;
+                lastMeterValue = 0;
+
+                if (isOutput) {
+                    if (ws && ws.readyState === 1) {
+                        try {
+                            ws.send(JSON.stringify({ type: 'audio_level', level: 0 }));
+                        } catch (e) {}
+                    }
+                    return;
                 }
+
+                try {
+                    window.parent.postMessage({ type: 'flowair-audio-level', level: 0 }, '*');
+                } catch (e) {}
             }
 
             function resumeAudioCtx() {
@@ -953,10 +1042,20 @@ async def player_page():
             }
 
             function applyVolume(v) {
+                if (typeof v === 'number') currentVolume = v;
                 if (isMuted) return;
-                if (typeof v === 'number') {
-                    video.volume = Math.max(0, Math.min(1, v / 100));
+                const level = Math.max(0, Math.min(1, currentVolume / 100));
+                video.volume = level;
+                standby.volume = level;
+            }
+
+            function routeSink(target) {
+                if (audioCtx && typeof audioCtx.setSinkId === 'function') {
+                    return audioCtx.setSinkId(target);
                 }
+                return Promise.all(mediaElements.map(function (element) {
+                    return element.setSinkId(target);
+                }));
             }
 
             function applySink() {
@@ -964,7 +1063,7 @@ async def player_page():
                 if (!navigator.mediaDevices || typeof video.setSinkId !== 'function') return;
 
                 if (!desiredSinkLabel) {
-                    video.setSinkId('').catch(function () {});
+                    routeSink('').catch(function () {});
                     return;
                 }
 
@@ -976,7 +1075,7 @@ async def player_page():
                             break;
                         }
                     }
-                    return video.setSinkId(target);
+                    return routeSink(target);
                 }).catch(function () {});
             }
 
@@ -1045,14 +1144,24 @@ async def player_page():
                 image.style.display = 'none';
             }
 
-            function reportPlaybackError(code, message) {
+            function noteProgress() {
+                lastProgressAt = clock();
+            }
+
+            function isFatalMediaError() {
+                const error = video.error;
+                if (!error) return false;
+                return error.code === 3 || error.code === 4;
+            }
+
+            function reportPlaybackError(code, message, fatal) {
                 if (!isLocalhost || currentItemId === null) return;
                 if (reportedItemId === currentItemId) return;
                 reportedItemId = currentItemId;
                 fetch(baseURL + '/player/playback_error', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'X-FlowAir-Client': '1' },
-                    body: JSON.stringify({ item_id: currentItemId, code: code, message: message })
+                    body: JSON.stringify({ item_id: currentItemId, code: code, message: message, fatal: !!fatal })
                 }).catch(function () {});
             }
 
@@ -1066,6 +1175,7 @@ async def player_page():
             function attemptPlay() {
                 clearPlayRetry();
                 if (!wantsPlay || currentItemType !== 'video') return;
+                if (video.ended) return;
                 if (video.readyState < 2) return;
                 if (!video.paused) return;
 
@@ -1077,20 +1187,84 @@ async def player_page():
                 }).catch(function (error) {
                     playAttempts++;
                     const name = error && error.name ? error.name : '';
-                    if (name === 'NotSupportedError') {
-                        reportPlaybackError('decode_failed', 'The player could not decode this file');
+                    if (name === 'NotSupportedError' || isFatalMediaError()) {
+                        reportPlaybackError('decode_failed', 'The player could not decode this file', true);
                         return;
                     }
-                    if (playAttempts <= 8) {
-                        playRetryTimer = setTimeout(attemptPlay, Math.min(1000, 120 * playAttempts));
+                    if (playAttempts <= 40) {
+                        playRetryTimer = setTimeout(attemptPlay, Math.min(1500, 150 * playAttempts));
                     } else {
-                        reportPlaybackError('play_failed', 'Playback could not be started');
+                        reportPlaybackError('play_failed', 'Playback could not be started on this machine', false);
                     }
                 });
             }
 
+            function clearStandby() {
+                standbyItemId = null;
+                standbyReady = false;
+                standby.pause();
+                standby.removeAttribute('src');
+                standby.load();
+            }
+
+            function preloadNext(item) {
+                if (!item || item.type !== 'video' || item.id === currentItemId) {
+                    if (standbyItemId !== null && (!item || item.id !== standbyItemId)) clearStandby();
+                    return;
+                }
+                if (standbyItemId === item.id) return;
+
+                standbyItemId = item.id;
+                standbyReady = false;
+                standby.muted = true;
+                standby.style.opacity = '0';
+                standby.src = baseURL + '/stream/' + item.id;
+                standby.load();
+            }
+
+            function swapToStandby(item, shouldPlay) {
+                const previous = video;
+                video = standby;
+                standby = previous;
+
+                standbyItemId = null;
+                standbyReady = false;
+
+                standby.pause();
+                standby.style.opacity = '0';
+                standby.removeAttribute('src');
+                standby.load();
+
+                currentItemId = item.id;
+                currentItemType = item.type;
+                wantsPlay = !!shouldPlay;
+                pendingStartAt = 0;
+                playAttempts = 0;
+                loadAttempts = 0;
+                loadPending = false;
+                reportedItemId = null;
+                lastHardSeekAt = 0;
+                lastKnownTime = 0;
+                noteProgress();
+
+                video.playbackRate = 1;
+                applyMuteState();
+                applyVolume(currentVolume);
+                applySink();
+
+                revealed = false;
+                image.style.display = 'none';
+                revealVideo();
+                attemptPlay();
+            }
+
             function startLoad(item, startAt, shouldPlay) {
                 clearPlayRetry();
+
+                if (item.type === 'video' && item.id === standbyItemId && standbyReady && !startAt) {
+                    swapToStandby(item, shouldPlay);
+                    return;
+                }
                 currentItemId = item.id;
                 currentItemType = item.type;
                 wantsPlay = !!shouldPlay;
@@ -1114,7 +1288,10 @@ async def player_page():
 
                 loadPending = true;
                 loadStartedAt = clock();
+                lastProgressAt = clock();
+                lastKnownTime = 0;
                 image.style.display = 'none';
+                applyMuteState();
                 video.src = baseURL + '/stream/' + item.id;
                 video.load();
             }
@@ -1124,11 +1301,12 @@ async def player_page():
                 loadAttempts++;
                 if (loadAttempts > 3) {
                     loadPending = false;
-                    reportPlaybackError('load_failed', 'The file could not be opened for playback');
+                    reportPlaybackError('load_failed', 'The file could not be opened for playback', isFatalMediaError());
                     return;
                 }
                 loadPending = true;
                 loadStartedAt = clock();
+                lastProgressAt = clock();
                 revealed = false;
                 video.src = baseURL + '/stream/' + currentItemId + '?retry=' + loadAttempts;
                 video.load();
@@ -1149,47 +1327,84 @@ async def player_page():
                 video.load();
             }
 
-            video.addEventListener('loadedmetadata', function () {
+            function activeOnly(handler) {
+                return function (event) {
+                    if (event.target !== video) return;
+                    handler(event);
+                };
+            }
+
+            function onStandbyReady(event) {
+                if (event.target === standby && standbyItemId !== null) standbyReady = true;
+            }
+
+            function onActiveMetadata() {
+                noteProgress();
                 if (pendingStartAt > 0.25) {
                     try {
                         video.currentTime = pendingStartAt;
                     } catch (e) {}
                 }
                 pendingStartAt = 0;
-            });
+            }
 
-            video.addEventListener('loadeddata', function () {
+            function onActiveLoadedData() {
                 loadPending = false;
                 loadAttempts = 0;
+                noteProgress();
                 revealVideo();
                 attemptPlay();
-            });
+            }
 
-            video.addEventListener('canplay', function () {
+            function onActiveCanPlay() {
                 loadPending = false;
                 revealVideo();
                 attemptPlay();
-            });
+            }
 
-            video.addEventListener('playing', function () {
+            function onActivePlaying() {
                 loadPending = false;
                 playAttempts = 0;
                 revealVideo();
                 startMeter();
-            });
+            }
 
-            video.addEventListener('pause', function () {
+            function onActivePause() {
                 if (!wantsPlay) stopMeter();
-            });
+            }
 
-            video.addEventListener('error', function () {
+            function onActiveEnded() {
+                wantsPlay = false;
+                clearPlayRetry();
+                stopMeter();
+            }
+
+            function onActiveError() {
                 if (currentItemType !== 'video') return;
                 loadPending = false;
+                if (isFatalMediaError()) {
+                    reportPlaybackError('decode_failed', 'The player could not decode this file', true);
+                    return;
+                }
                 reloadCurrent();
+            }
+
+            mediaElements.forEach(function (element) {
+                element.addEventListener('progress', activeOnly(noteProgress));
+                element.addEventListener('timeupdate', activeOnly(noteProgress));
+                element.addEventListener('loadedmetadata', activeOnly(onActiveMetadata));
+                element.addEventListener('loadeddata', activeOnly(onActiveLoadedData));
+                element.addEventListener('canplay', activeOnly(onActiveCanPlay));
+                element.addEventListener('playing', activeOnly(onActivePlaying));
+                element.addEventListener('pause', activeOnly(onActivePause));
+                element.addEventListener('ended', activeOnly(onActiveEnded));
+                element.addEventListener('error', activeOnly(onActiveError));
+                element.addEventListener('canplay', onStandbyReady);
+                element.addEventListener('loadeddata', onStandbyReady);
             });
 
             image.addEventListener('error', function () {
-                reportPlaybackError('image_failed', 'The image could not be displayed');
+                reportPlaybackError('image_failed', 'The image could not be displayed', true);
             });
 
             function handlePlaybackState(data) {
@@ -1212,8 +1427,11 @@ async def player_page():
 
                 if (item.id !== currentItemId) {
                     startLoad(item, data.elapsed || 0, data.is_playing);
+                    preloadNext(data.next_item);
                     return;
                 }
+
+                preloadNext(data.next_item);
 
                 if (item.type === 'image') {
                     image.style.display = 'block';
@@ -1292,14 +1510,21 @@ async def player_page():
             connectWebSocket();
 
             function watchdog() {
-                if (loadPending && clock() - loadStartedAt > 12000) {
+                if (currentItemType === 'video' && !video.paused && video.currentTime !== lastKnownTime) {
+                    lastKnownTime = video.currentTime;
+                    noteProgress();
+                }
+
+                const stalledFor = clock() - lastProgressAt;
+
+                if (loadPending && stalledFor > 45000) {
                     reloadCurrent();
                     return;
                 }
-                if (wantsPlay && currentItemType === 'video' && video.paused && video.readyState >= 2) {
+                if (wantsPlay && currentItemType === 'video' && video.paused && !video.ended && video.readyState >= 2) {
                     attemptPlay();
                 }
-                if (wantsPlay && currentItemType === 'video' && video.readyState < 2 && clock() - loadStartedAt > 20000) {
+                if (wantsPlay && currentItemType === 'video' && video.readyState < 2 && stalledFor > 60000) {
                     reloadCurrent();
                 }
                 if (!revealed && currentItemType === 'video' && video.videoWidth) {
@@ -1327,10 +1552,12 @@ async def player_page():
                             handlePlaybackState(data);
                             return;
                         }
+                        preloadNext(data.next_item);
                         if (!data.is_playing) {
                             return;
                         }
                         if (video.paused) {
+                            if (video.ended) return;
                             wantsPlay = true;
                             attemptPlay();
                             return;

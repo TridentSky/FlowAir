@@ -407,6 +407,7 @@ class PlaylistManager:
                 item["obs_action"] = obs_action
                 item["obs_transition"] = obs_transition
                 item["obs_transition_duration"] = obs_transition_duration
+                self._bump_revision()
                 return item
         return None
 
@@ -414,6 +415,7 @@ class PlaylistManager:
         for item in self.playlist:
             if item["id"] == item_id and item["type"] == "note":
                 item["note"] = note
+                self._bump_revision()
                 return True
         return False
 
@@ -592,6 +594,35 @@ class PlaylistManager:
             self.next_video_scheduled_time = None
             self.scheduled_item_id = None
 
+    def get_next_playable_item(self):
+        if self.current_index < 0:
+            return None
+
+        current = self.get_current_item()
+        if current and current.get("type") == "video" and current.get("loop"):
+            return None
+
+        for index in range(self.current_index + 1, len(self.playlist)):
+            item = self.playlist[index]
+            if item["type"] == "stop":
+                return None
+            if item["type"] in ["note", "obs"]:
+                continue
+            if item.get("status") == "corrupted" or item.get("playability") == "unsupported":
+                continue
+            if item["type"] in ["video", "image"]:
+                return item
+        return None
+
+    def _notify_playback_state(self):
+        if self.on_playback_change:
+            self.on_playback_change({
+                "type": "playback_state_changed",
+                "current_item": self.get_current_item(),
+                "next_item": self.get_next_playable_item(),
+                "is_playing": self.is_playing
+            })
+
     def next(self, from_force_timing=False):
         if not self.next_lock.acquire(blocking=False):
             return
@@ -622,6 +653,8 @@ class PlaylistManager:
             while True:
                 if self.current_index >= len(self.playlist) - 1:
                     self.stop()
+                    self.recalculate_start_times()
+                    self._notify_playback_state()
                     return
 
                 self.current_index += 1
@@ -630,6 +663,8 @@ class PlaylistManager:
                 if next_item["type"] == "stop":
                     self.current_index -= 1
                     self.stop()
+                    self.recalculate_start_times()
+                    self._notify_playback_state()
                     return
 
                 if next_item["type"] == "note":
@@ -667,12 +702,7 @@ class PlaylistManager:
 
             self.recalculate_start_times()
 
-            if self.on_playback_change:
-                self.on_playback_change({
-                    "type": "playback_state_changed",
-                    "current_item": self.get_current_item(),
-                    "is_playing": self.is_playing
-                })
+            self._notify_playback_state()
         finally:
             self.next_lock.release()
 
@@ -752,17 +782,27 @@ class PlaylistManager:
                 return True
         return False
 
-    def record_playback_error(self, item_id, code, message):
+    def record_playback_error(self, item_id, code, message, fatal=True):
         for item in self.playlist:
             if item["id"] == item_id:
-                item["status"] = "corrupted"
-                item["playability"] = "unsupported"
+                level = "error" if fatal else "warn"
                 issues = list(item.get("issues") or [])
                 issues = [issue for issue in issues if issue.get("code") != code]
-                issues.append({"level": "error", "code": code or "playback_failed", "message": message or "The player could not decode this file"})
+                issues.append({
+                    "level": level,
+                    "code": code or "playback_failed",
+                    "message": message or "The player could not decode this file"
+                })
                 item["issues"] = issues
-                if item.get("location"):
-                    self._evict_cache_entries(item["location"])
+
+                if fatal:
+                    item["status"] = "corrupted"
+                    item["playability"] = "unsupported"
+                    if item.get("location"):
+                        self._evict_cache_entries(item["location"])
+                elif item.get("playability") == "ok":
+                    item["playability"] = "warn"
+
                 self._bump_revision()
                 return item
         return None

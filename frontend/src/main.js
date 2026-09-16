@@ -1,6 +1,7 @@
-const { app, BrowserWindow, dialog, ipcMain, screen, globalShortcut, powerSaveBlocker, shell, net, session } = require('electron')
+const { app, BrowserWindow, clipboard, dialog, ipcMain, screen, globalShortcut, powerSaveBlocker, shell, net, session } = require('electron')
 const path = require('path')
 const fs = require('fs')
+const os = require('os')
 const http = require('http')
 const crypto = require('crypto')
 const { spawn, execFileSync } = require('child_process')
@@ -106,6 +107,27 @@ const PLAYLIST_EXTENSION = '.flowair'
 const PLAYLIST_FILE_LIMIT = 16 * 1024 * 1024
 const PLAYLIST_FILE_DELIVERY_MS = 300
 const PLAYLIST_FILE_QUEUE_LIMIT = 8
+const DIAGNOSTICS_GPU_TIMEOUT_MS = 2500
+const DIAGNOSTICS_GPU_VENDORS = { 4098: 'AMD', 4318: 'NVIDIA', 5140: 'Microsoft', 32902: 'Intel' }
+const DIAGNOSTICS_REASON_DECODE = 'Video is being decoded by the processor because no graphics driver is active. Playback starts late, stutters and the countdown can freeze. Install the graphics driver from the support page of the PC maker and restart the computer.'
+const DIAGNOSTICS_REASON_COMPOSITING = 'The picture is drawn by the processor instead of the graphics chip, so FlowAir stays slow even when the processor looks idle. Installing the graphics driver fixes it.'
+const DIAGNOSTICS_REASON_RASTERIZATION = 'Graphics are rasterized by the processor, which leaves less room for playback on a small computer.'
+const DIAGNOSTICS_REASON_ACCELERATION_OFF = 'Hardware acceleration is turned off in FlowAir, so the processor does all the video work. Turn it on again in Settings and restart FlowAir.'
+const DIAGNOSTICS_REASON_ACCELERATION_RESTART = 'Hardware acceleration is turned on again, but this run of FlowAir still works without it. Restart FlowAir to use the graphics chip.'
+const DIAGNOSTICS_FEATURE_LEVELS = {
+  enabled: 'enabled',
+  enabled_on: 'enabled',
+  enabled_force: 'enabled',
+  enabled_force_on: 'enabled',
+  enabled_readback: 'enabled',
+  disabled_off_ok: 'unknown',
+  unavailable_off_ok: 'unknown',
+  disabled_off: 'disabled',
+  unavailable_off: 'disabled',
+  disabled_software: 'software',
+  disabled_software_animated: 'software',
+  unavailable_software: 'software'
+}
 const CACHE_DIRECTORIES = ['Cache', 'Code Cache', 'GPUCache', 'DawnCache', 'DawnGraphiteCache', 'DawnWebGPUCache', 'Shared Dictionary']
 const SPLASH_HTML = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>FlowAir</title><style>html,body{margin:0;height:100%;background:#1b1b1b;color:#ececec;font-family:"Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;user-select:none}body{display:flex;flex-direction:column;align-items:center;justify-content:center}h1{margin:0 0 10px;font-size:30px;font-weight:600}p{margin:0;color:#767676;font-size:13px}</style></head><body><h1>FlowAir</h1><p>Starting playout engine...</p></body></html>'
 
@@ -138,6 +160,10 @@ let rendererReady = false
 let rendererLoadToken = 0
 let revealPending = null
 let revealSettledAt = 0
+let backendVersion = ''
+let hardwareAccelerationEnabled = true
+let diagnosticsCache = null
+let diagnosticsPending = null
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -217,7 +243,7 @@ function probeBackend(timeoutMs = 1500) {
         try {
           const data = JSON.parse(body)
           if (data && data.message === 'FlowAir Broadcast API') {
-            finish({ state: 'flowair', instance: data.instance || '' })
+            finish({ state: 'flowair', instance: data.instance || '', version: typeof data.version === 'string' ? data.version : '' })
             return
           }
         } catch (error) {
@@ -281,7 +307,10 @@ async function waitForBackend(child) {
   while (Date.now() < deadline) {
     if (backendSpawnError || child.exitCode !== null) return false
     const probe = await probeBackend(1000)
-    if (probe.state === 'flowair' && probe.instance === backendInstance) return true
+    if (probe.state === 'flowair' && probe.instance === backendInstance) {
+      backendVersion = probe.version || ''
+      return true
+    }
     await delay(250)
   }
   return false
@@ -304,7 +333,10 @@ function stopBackend() {
 async function launchBackend() {
   const probe = await probeBackend()
   if (probe.state === 'flowair') {
-    if (!app.isPackaged) return { ok: true }
+    if (!app.isPackaged) {
+      backendVersion = probe.version || ''
+      return { ok: true }
+    }
     const released = await waitForPortRelease(6000)
     if (!released) return { ok: false, reason: 'already-running' }
   } else if (probe.state === 'foreign') {
@@ -750,6 +782,7 @@ function readUpdateSettings() {
   const source = stored && typeof stored === 'object' ? stored : {}
   updateSettings = {
     enabled: source.enabled !== false,
+    hardwareAcceleration: source.hardwareAcceleration !== false,
     dismissed: Array.isArray(source.dismissed) ? source.dismissed.filter(version => typeof version === 'string').slice(-UPDATE_DISMISSED_LIMIT) : [],
     downloadedVersion: typeof source.downloadedVersion === 'string' ? source.downloadedVersion : '',
     downloadedPath: typeof source.downloadedPath === 'string' ? source.downloadedPath : '',
@@ -1255,6 +1288,226 @@ function setUpdatesEnabled(enabled) {
   scheduleUpdateChecks(1000)
 }
 
+function gpuFeatureLevel(value) {
+  const text = String(value || '').trim().toLowerCase()
+  if (!text) return 'unknown'
+  const known = DIAGNOSTICS_FEATURE_LEVELS[text]
+  if (known) return known
+  if (text.endsWith('_ok')) return 'unknown'
+  if (text.includes('software')) return 'software'
+  if (text.includes('disabled') || text.includes('unavailable')) return 'disabled'
+  if (text.includes('enabled')) return 'enabled'
+  return 'unknown'
+}
+
+function isDegradedFeature(level) {
+  return level === 'software' || level === 'disabled'
+}
+
+function gpuFeatureLevels() {
+  let status = null
+  try {
+    status = app.getGPUFeatureStatus()
+  } catch (error) {
+    status = null
+  }
+  const source = status && typeof status === 'object' ? status : {}
+  return {
+    videoDecode: gpuFeatureLevel(source.video_decode),
+    compositing: gpuFeatureLevel(source.gpu_compositing),
+    rasterization: gpuFeatureLevel(source.rasterization)
+  }
+}
+
+function gpuInfo(infoType) {
+  return new Promise(resolve => {
+    let settled = false
+    const finish = (value) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(value)
+    }
+    const timer = setTimeout(() => finish(null), DIAGNOSTICS_GPU_TIMEOUT_MS)
+    try {
+      app.getGPUInfo(infoType).then(info => finish(info), () => finish(null))
+    } catch (error) {
+      finish(null)
+    }
+  })
+}
+
+function gpuVendorName(device) {
+  const named = device && typeof device.vendorString === 'string' ? device.vendorString.trim() : ''
+  if (named) return named
+  const id = Number(device && device.vendorId)
+  if (!id) return ''
+  return DIAGNOSTICS_GPU_VENDORS[id] || `0x${id.toString(16)}`
+}
+
+function gpuModelName(device, auxAttributes) {
+  const named = device && typeof device.deviceString === 'string' ? device.deviceString.trim() : ''
+  if (named) return named
+  const renderer = typeof auxAttributes.glRenderer === 'string' ? auxAttributes.glRenderer.trim() : ''
+  if (renderer) return renderer
+  const id = Number(device && device.deviceId)
+  return id ? `0x${id.toString(16)}` : ''
+}
+
+async function readGpuDevice() {
+  const info = await gpuInfo('complete') || await gpuInfo('basic')
+  const devices = info && Array.isArray(info.gpuDevice) ? info.gpuDevice.filter(entry => entry && typeof entry === 'object') : []
+  const device = devices.find(entry => entry.active) || devices[0] || null
+  const auxAttributes = info && info.auxAttributes && typeof info.auxAttributes === 'object' ? info.auxAttributes : {}
+  return {
+    vendor: gpuVendorName(device),
+    model: gpuModelName(device, auxAttributes),
+    driverVersion: device && typeof device.driverVersion === 'string' ? device.driverVersion.trim() : ''
+  }
+}
+
+function healthReasons(gpu, level) {
+  if (level === 'ok') return []
+  if (gpu.accelerationDisabledNow) return [gpu.accelerationDisabled ? DIAGNOSTICS_REASON_ACCELERATION_OFF : DIAGNOSTICS_REASON_ACCELERATION_RESTART]
+  const reasons = []
+  if (isDegradedFeature(gpu.videoDecode)) reasons.push(DIAGNOSTICS_REASON_DECODE)
+  if (isDegradedFeature(gpu.compositing)) reasons.push(DIAGNOSTICS_REASON_COMPOSITING)
+  if (isDegradedFeature(gpu.rasterization)) reasons.push(DIAGNOSTICS_REASON_RASTERIZATION)
+  return reasons
+}
+
+function healthSummary(gpu) {
+  const degraded = [gpu.videoDecode, gpu.compositing].filter(isDegradedFeature).length
+  let level = 'ok'
+  if (degraded >= 2) level = 'critical'
+  else if (degraded === 1) level = 'warning'
+  return { level, reasons: healthReasons(gpu, level) }
+}
+
+function systemSnapshot() {
+  const snapshot = { platform: process.platform, release: '', arch: process.arch, cpuModel: '', cpuCores: 0, totalMemoryMb: 0, freeMemoryMb: 0 }
+  try {
+    const cpus = os.cpus() || []
+    snapshot.release = os.release()
+    snapshot.cpuModel = cpus.length && cpus[0].model ? String(cpus[0].model).trim() : ''
+    snapshot.cpuCores = cpus.length
+    snapshot.totalMemoryMb = Math.round(os.totalmem() / 1048576)
+    snapshot.freeMemoryMb = Math.round(os.freemem() / 1048576)
+  } catch (error) {
+  }
+  return snapshot
+}
+
+function appSnapshot() {
+  let version = ''
+  try {
+    version = app.getVersion()
+  } catch (error) {
+    version = ''
+  }
+  return {
+    version,
+    engineVersion: backendVersion,
+    electron: process.versions.electron || '',
+    chrome: process.versions.chrome || ''
+  }
+}
+
+function accelerationSnapshot() {
+  let disabled = !hardwareAccelerationEnabled
+  try {
+    disabled = !readUpdateSettings().hardwareAcceleration
+  } catch (error) {
+    disabled = !hardwareAccelerationEnabled
+  }
+  return { accelerationDisabled: disabled, accelerationDisabledNow: !hardwareAccelerationEnabled }
+}
+
+function diagnosticsText(diagnostics) {
+  const gpu = diagnostics.gpu
+  const system = diagnostics.system
+  const versions = diagnostics.app
+  const unknown = 'unknown'
+  const lines = [
+    `FlowAir ${versions.version} diagnostics`,
+    `Engine ${versions.engineVersion || unknown} | Electron ${versions.electron} | Chrome ${versions.chrome}`,
+    `System ${system.platform} ${system.release || unknown} ${system.arch}`,
+    `CPU ${system.cpuModel || unknown} (${system.cpuCores} cores)`,
+    `Memory ${system.freeMemoryMb} MB free of ${system.totalMemoryMb} MB`,
+    `GPU ${gpu.model || unknown} by ${gpu.vendor || unknown} (driver ${gpu.driverVersion || unknown})`,
+    `Video decode ${gpu.videoDecode} | Compositing ${gpu.compositing} | Rasterization ${gpu.rasterization}`,
+    `Hardware acceleration ${gpu.accelerationDisabledNow ? 'off' : 'on'}`
+  ]
+  if (gpu.accelerationDisabled !== gpu.accelerationDisabledNow) {
+    lines.push(`Hardware acceleration after restart ${gpu.accelerationDisabled ? 'off' : 'on'}`)
+  }
+  lines.push(`Status ${diagnostics.health.level}`)
+  return lines.concat(diagnostics.health.reasons.map(reason => `- ${reason}`)).join('\n')
+}
+
+function emptyDiagnostics() {
+  const gpu = { vendor: '', model: '', driverVersion: '', videoDecode: 'unknown', compositing: 'unknown', rasterization: 'unknown', ...accelerationSnapshot() }
+  const diagnostics = { gpu, system: systemSnapshot(), app: appSnapshot(), health: healthSummary(gpu) }
+  diagnostics.text = diagnosticsText(diagnostics)
+  return diagnostics
+}
+
+async function composeDiagnostics() {
+  const device = await readGpuDevice()
+  const gpu = { ...device, ...gpuFeatureLevels(), ...accelerationSnapshot() }
+  const diagnostics = { gpu, system: systemSnapshot(), app: appSnapshot(), health: healthSummary(gpu) }
+  diagnostics.text = diagnosticsText(diagnostics)
+  return diagnostics
+}
+
+async function buildDiagnostics() {
+  let diagnostics = null
+  try {
+    diagnostics = await composeDiagnostics()
+  } catch (error) {
+    diagnostics = null
+  }
+  if (diagnostics) diagnosticsCache = diagnostics
+  return diagnostics || emptyDiagnostics()
+}
+
+function readDiagnostics(refresh) {
+  if (diagnosticsCache && !refresh) return Promise.resolve(diagnosticsCache)
+  if (!diagnosticsPending || refresh) {
+    const pending = buildDiagnostics()
+    diagnosticsPending = pending
+    pending.then(() => {
+      if (diagnosticsPending === pending) diagnosticsPending = null
+    })
+  }
+  return diagnosticsPending
+}
+
+function setHardwareAcceleration(enabled) {
+  const settings = readUpdateSettings()
+  settings.hardwareAcceleration = enabled !== false
+  writeUpdateSettings()
+  if (diagnosticsCache) {
+    diagnosticsCache.gpu.accelerationDisabled = !settings.hardwareAcceleration
+    diagnosticsCache.health = healthSummary(diagnosticsCache.gpu)
+    diagnosticsCache.text = diagnosticsText(diagnosticsCache)
+  }
+  return { success: true, enabled: settings.hardwareAcceleration, restartRequired: settings.hardwareAcceleration !== hardwareAccelerationEnabled }
+}
+
+async function copyDiagnostics() {
+  const fresh = await readDiagnostics(true)
+  const diagnostics = fresh && fresh.text ? fresh : diagnosticsCache
+  const text = diagnostics && diagnostics.text ? diagnostics.text : ''
+  if (!text) return { success: false }
+  try {
+    clipboard.writeText(text)
+  } catch (error) {
+    return { success: false }
+  }
+  return { success: true }
+}
+
 function fetchPlayerState(timeoutMs) {
   return new Promise(resolve => {
     let settled = false
@@ -1630,6 +1883,18 @@ function registerIpcHandlers() {
 
   ipcMain.handle('audio:list-devices', () => listAudioOutputs())
 
+  ipcMain.handle('system:diagnostics', (event, payload) => readDiagnostics(Boolean(payload && typeof payload === 'object' && payload.refresh)))
+
+  ipcMain.handle('system:set-hardware-acceleration', (event, payload) => {
+    if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return { success: false, enabled: hardwareAccelerationEnabled, restartRequired: false }
+    return setHardwareAcceleration(payload && typeof payload === 'object' ? payload.enabled : payload)
+  })
+
+  ipcMain.handle('system:copy-diagnostics', (event) => {
+    if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return { success: false }
+    return copyDiagnostics()
+  })
+
   ipcMain.handle('read-autosave', () => {
     try {
       const data = JSON.parse(fs.readFileSync(autosavePath(), 'utf-8'))
@@ -1659,6 +1924,8 @@ if (!app.requestSingleInstanceLock()) {
   app.setAppUserModelId(APP_ID)
   app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
   app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
+  hardwareAccelerationEnabled = readUpdateSettings().hardwareAcceleration
+  if (!hardwareAccelerationEnabled) app.disableHardwareAcceleration()
   clearStaleCaches()
   registerIpcHandlers()
 

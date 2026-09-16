@@ -236,6 +236,7 @@ const Playlist = ({
   onToggleFollow,
   nextHighlightId = null,
   onOpenLocation,
+  onRevalidateItem,
   onClearSelection,
   searchOpen = false,
   filterActive = false,
@@ -274,6 +275,7 @@ const Playlist = ({
     onEditOBSEvent,
     onToggleLoop,
     onOpenLocation,
+    onRevalidateItem,
     onClearSelection,
     filterActive,
     searchQuery,
@@ -657,6 +659,12 @@ const Playlist = ({
     closeContextMenu()
   }
 
+  const handleRevalidateMenu = () => {
+    const revalidate = propsRef.current.onRevalidateItem
+    if (revalidate && contextMenu.item) revalidate(contextMenu.item.id)
+    closeContextMenu()
+  }
+
   const handleCopyPath = () => {
     const location = contextMenu.item ? contextMenu.item.location : ''
     if (location && navigator.clipboard) {
@@ -750,7 +758,9 @@ const Playlist = ({
 
   const menuItem = contextMenu ? contextMenu.item : null
   const canCopyPath = !!(menuItem && !SPECIAL_TYPES.includes(menuItem.type) && menuItem.location)
-  const menuEntries = (menuItem ? 1 : 0) + (canCopyPath ? 1 : 0) + 2 + (obsConnected ? 1 : 0)
+  const canRevalidate = !!(menuItem && onRevalidateItem && !SPECIAL_TYPES.includes(menuItem.type) &&
+    (menuItem.status === 'corrupted' || menuItem.playability === 'unsupported'))
+  const menuEntries = (menuItem ? 1 : 0) + (canRevalidate ? 1 : 0) + (canCopyPath ? 1 : 0) + 2 + (obsConnected ? 1 : 0)
   const menuHeight = 52 + menuEntries * 34
 
   return (
@@ -883,6 +893,16 @@ const Playlist = ({
             >
               <Icon name="plus" size={16} />
               Duplicate Item
+            </button>
+          )}
+          {canRevalidate && (
+            <button
+              className="pl-menu-item btn-subtle"
+              onClick={handleRevalidateMenu}
+              title="Analyse this file again, in case it was marked as damaged by mistake"
+            >
+              <Icon name="refresh" size={16} />
+              Check Again
             </button>
           )}
           {canCopyPath && (
