@@ -12,8 +12,11 @@ const BACKEND_PORT = 8000
 const BACKEND_URL = `http://localhost:${BACKEND_PORT}`
 const DEV_SERVER_URL = 'http://localhost:3000'
 const OUTPUT_PLAYER_URL = `${BACKEND_URL}/player?output=1`
-const RELEASES_API_URL = 'https://api.github.com/repos/TridentSky/FlowAir/releases/latest'
-const RELEASES_PAGE_URL = 'https://github.com/TridentSky/FlowAir/releases/latest'
+const RELEASES_API_URLS = [
+  'https://api.github.com/repositories/1258116151/releases/latest',
+  'https://api.github.com/repos/BrandSilva/FlowAir/releases/latest'
+]
+const RELEASES_PAGE_URL = 'https://github.com/BrandSilva/FlowAir/releases/latest'
 const BACKEND_START_TIMEOUT_MS = 45000
 const BACKEND_RESTART_LIMIT = 5
 const BACKEND_RESTART_WINDOW_MS = 120000
@@ -862,7 +865,7 @@ function releaseNotes(value) {
 function releaseAsset(release) {
   const assets = Array.isArray(release.assets) ? release.assets : []
   const match = assets.find(asset => asset && asset.name === UPDATE_ASSET_NAME)
-  if (!match || typeof match.browser_download_url !== 'string' || !match.browser_download_url.startsWith('https://')) return null
+  if (!match || typeof match.browser_download_url !== 'string' || !match.browser_download_url.startsWith('https://github.com/')) return null
   const size = Number(match.size) || 0
   if (size <= 0) return null
   return {
@@ -885,7 +888,15 @@ function parseRelease(body) {
   }
 }
 
-function fetchLatestRelease() {
+async function fetchLatestRelease() {
+  for (const url of RELEASES_API_URLS) {
+    const release = await requestRelease(url)
+    if (release) return release
+  }
+  return null
+}
+
+function requestRelease(url) {
   return new Promise(resolve => {
     let settled = false
     let timer = null
@@ -897,7 +908,7 @@ function fetchLatestRelease() {
       resolve(value)
     }
     try {
-      request = net.request({ method: 'GET', url: RELEASES_API_URL, redirect: 'follow' })
+      request = net.request({ method: 'GET', url, redirect: 'follow' })
     } catch (error) {
       finish(null)
       return

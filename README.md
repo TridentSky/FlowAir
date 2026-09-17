@@ -19,7 +19,7 @@ Professional 24/7 broadcast playout for Windows. Build a playlist of videos and 
 
 ## Install
 
-1. Download **FlowAir-Setup.exe** from [Releases](https://github.com/TridentSky/FlowAir/releases/latest)
+1. Download **FlowAir-Setup.exe** from [Releases](https://github.com/BrandSilva/FlowAir/releases/latest)
 2. Run it. Windows may show a blue **"Windows protected your PC"** warning because the app is not code-signed yet — click **More info** and then **Run anyway**
 3. Accept the administrator prompt and choose an install folder. The default is `C:\Program Files\FlowAir`
 4. Leave **Run FlowAir** ticked on the last page, or open FlowAir later from the desktop or Start Menu shortcut
@@ -199,6 +199,10 @@ FlowAir/
 - [FFmpeg](https://ffmpeg.org) (ffprobe and ffmpeg) — media validation and conversion ([GPL](https://ffmpeg.org/legal.html))
 - [obsws-python](https://github.com/aatikturk/obsws-python) — OBS WebSocket control
 - Developed with [Claude Code](https://claude.com/claude-code)
+
+## Made by TridentSky
+
+FlowAir is made by [TridentSky](https://tridentsky.net/software). Need custom software or a website? [Get in touch](https://tridentsky.net/software).
 
 ## License
 

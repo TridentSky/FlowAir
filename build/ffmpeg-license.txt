@@ -25,7 +25,7 @@ bundled libraries are listed at:
   https://www.gyan.dev/ffmpeg/builds/
 
 If any of these locations stop providing the source, open an issue at
-https://github.com/TridentSky/FlowAir/issues and the corresponding source
+https://github.com/BrandSilva/FlowAir/issues and the corresponding source
 will be provided for at least three years after the release that shipped
 these executables.
 

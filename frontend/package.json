@@ -1,16 +1,16 @@
 {
   "name": "flowair",
   "productName": "FlowAir",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "description": "Professional 24/7 broadcast playout system for Windows",
   "main": "src/main.js",
   "author": "TridentSky",
   "license": "MIT",
   "private": true,
-  "homepage": "https://github.com/TridentSky/FlowAir",
+  "homepage": "https://github.com/BrandSilva/FlowAir",
   "repository": {
     "type": "git",
-    "url": "https://github.com/TridentSky/FlowAir.git"
+    "url": "https://github.com/BrandSilva/FlowAir.git"
   },
   "scripts": {
     "start": "electron .",
@@ -104,6 +104,7 @@
       "installerHeader": "../build/installerHeader.bmp",
       "include": "../build/installer.nsh",
       "deleteAppDataOnUninstall": true,
+      "uninstallUrlInfoAbout": "https://tridentsky.net/software",
       "differentialPackage": false,
       "runAfterFinish": true,
       "installerLanguages": [
